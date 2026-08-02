@@ -78,6 +78,8 @@ def extend_cfg(cfg):
     cfg.ANALYSIS.FREQUENCY.OUTPUT_DIR = './outputs/frequency_analysis'
     cfg.ANALYSIS.FREQUENCY.BAND_NAMES = ['low', 'mid', 'high']
     cfg.ANALYSIS.FREQUENCY.BAND_EDGES = [0.0, 0.15, 0.35, 1.0]
+    cfg.ANALYSIS.FREQUENCY.BAND_MODE = 'fixed'
+    cfg.ANALYSIS.FREQUENCY.ENERGY_SAMPLES_PER_CLASS = 20
     cfg.ANALYSIS.FREQUENCY.SAMPLES_PER_CLASS = 5
     cfg.ANALYSIS.FREQUENCY.WEIGHT_TEMPERATURE = 0.05
     cfg.ANALYSIS.FREQUENCY.COMPETITOR_SCOPE = 'all'
@@ -87,7 +89,7 @@ def extend_cfg(cfg):
 
     
 
-def setup_cfg(dataset_cfg_file, method_cfg_file):
+def setup_cfg(dataset_cfg_file, method_cfg_file, seed=None):
     cfg = CN()
     extend_cfg(cfg)
 
@@ -96,6 +98,9 @@ def setup_cfg(dataset_cfg_file, method_cfg_file):
 
     # 2. From the method config file
     cfg.merge_from_file(method_cfg_file)
+
+    if seed is not None:
+        cfg.SEED = seed
 
     cfg.freeze()
     return cfg
@@ -107,13 +112,14 @@ def main():
 
     parser.add_argument('--data_cfg', type=str, help="Path to the data configuration file")
     parser.add_argument('--train_cfg', type=str, help="Path to the training configuration file")
+    parser.add_argument('--seed', type=int, default=None, help="Optional random seed override")
 
     args = parser.parse_args()
 
     data_cfg = args.data_cfg
     train_cfg = args.train_cfg
 
-    cfg = setup_cfg(data_cfg, train_cfg)
+    cfg = setup_cfg(data_cfg, train_cfg, seed=args.seed)
 
     # Set the random seed and GPU ID
     set_seed(cfg.SEED)

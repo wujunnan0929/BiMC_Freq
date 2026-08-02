@@ -12,7 +12,10 @@ import os
 from utils.frequency_analysis import (
     FourierBandStop,
     FrequencyContributionAccumulator,
+    band_energy_fractions,
+    equal_energy_band_edges,
     semantic_margins,
+    summed_power_spectrum,
     summarize_frequency_records,
     write_frequency_records,
 )
@@ -46,9 +49,18 @@ class Runner:
         self.frequency_analysis_only = frequency_cfg.ANALYSIS_ONLY
         self.frequency_records = []
         self.frequency_text_features = None
+        self.frequency_band_energy_fractions = None
         if self.frequency_analysis_enabled:
             if frequency_cfg.SAMPLES_PER_CLASS <= 0:
                 raise ValueError('ANALYSIS.FREQUENCY.SAMPLES_PER_CLASS must be positive')
+            if frequency_cfg.BAND_MODE not in ('fixed', 'equal_energy'):
+                raise ValueError(
+                    "ANALYSIS.FREQUENCY.BAND_MODE must be 'fixed' or 'equal_energy'"
+                )
+            if frequency_cfg.ENERGY_SAMPLES_PER_CLASS <= 0:
+                raise ValueError(
+                    'ANALYSIS.FREQUENCY.ENERGY_SAMPLES_PER_CLASS must be positive'
+                )
             self.frequency_band_stop = FourierBandStop(
                 frequency_cfg.BAND_NAMES,
                 frequency_cfg.BAND_EDGES,
@@ -56,7 +68,9 @@ class Runner:
             )
             self.frequency_output_dir = os.path.join(
                 frequency_cfg.OUTPUT_DIR,
-                '{}_seed{}'.format(cfg.DATASET.NAME.lower(), cfg.SEED),
+                '{}_seed{}_{}'.format(
+                    cfg.DATASET.NAME.lower(), cfg.SEED, frequency_cfg.BAND_MODE
+                ),
             )
 
 
@@ -102,6 +116,8 @@ class Runner:
     @torch.no_grad()
     def run(self):
         print(f'Start inferencing on all tasks: [0, {self.data_manager.num_tasks - 1}]')
+        if self.frequency_analysis_enabled:
+            self.prepare_frequency_bands()
         state_dict_list = []
         for i in range(self.data_manager.num_tasks):
             self.model.eval()
@@ -144,6 +160,58 @@ class Runner:
                 print(f'task {i:2d}, acc:{task_acc}')
         else:
             print('Frequency analysis complete. Results: {}'.format(self.frequency_output_dir))
+
+
+    @torch.no_grad()
+    def prepare_frequency_bands(self):
+        frequency_cfg = self.cfg.ANALYSIS.FREQUENCY
+        if frequency_cfg.BAND_MODE == 'fixed':
+            print(
+                'Using fixed radial frequency edges: {}'.format(
+                    list(self.frequency_band_stop.band_edges)
+                )
+            )
+            return
+
+        # Dataset construction samples classes with NumPy's global RNG. Restore
+        # its state afterwards so the subsequent 5-shot analysis uses the same
+        # samples it would have used without this calibration pass.
+        numpy_rng_state = np.random.get_state()
+        calibration_loader = self.data_manager.get_dataloader(
+            0,
+            source='train',
+            mode='test',
+            accumulate_past=False,
+            shot_override=frequency_cfg.ENERGY_SAMPLES_PER_CLASS,
+        )
+        np.random.set_state(numpy_rng_state)
+
+        print(
+            'Estimating equal-energy frequency bands from {} base images per class ...'.format(
+                frequency_cfg.ENERGY_SAMPLES_PER_CLASS
+            )
+        )
+        power_spectrum = None
+        for batch in tqdm(calibration_loader):
+            batch_power = summed_power_spectrum(batch['image'])
+            if power_spectrum is None:
+                power_spectrum = batch_power
+            else:
+                power_spectrum += batch_power
+
+        estimated_edges = equal_energy_band_edges(
+            power_spectrum, len(frequency_cfg.BAND_NAMES)
+        )
+        self.frequency_band_stop.set_band_edges(estimated_edges)
+        self.frequency_band_energy_fractions = band_energy_fractions(
+            power_spectrum, estimated_edges
+        )
+        print('Estimated radial band edges: {}'.format(estimated_edges))
+        print(
+            'Measured base-set band energy fractions: {}'.format(
+                self.frequency_band_energy_fractions
+            )
+        )
 
 
     @torch.no_grad()
@@ -231,7 +299,15 @@ class Runner:
             'seed': int(self.cfg.SEED),
             'method': 'Fourier radial band-stop semantic-margin contribution',
             'band_names': list(frequency_cfg.BAND_NAMES),
-            'band_edges': [float(value) for value in frequency_cfg.BAND_EDGES],
+            'band_mode': frequency_cfg.BAND_MODE,
+            'configured_band_edges': [
+                float(value) for value in frequency_cfg.BAND_EDGES
+            ],
+            'resolved_band_edges': list(self.frequency_band_stop.band_edges),
+            'base_band_energy_fractions': self.frequency_band_energy_fractions,
+            'energy_samples_per_base_class': int(
+                frequency_cfg.ENERGY_SAMPLES_PER_CLASS
+            ),
             'samples_per_class': int(frequency_cfg.SAMPLES_PER_CLASS),
             'weight_temperature': float(frequency_cfg.WEIGHT_TEMPERATURE),
             'competitor_scope': competitor_scope,

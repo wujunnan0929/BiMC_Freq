@@ -13,6 +13,94 @@ CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
 
 
+def radial_frequency_grid(height, width, device):
+    fy = torch.fft.fftfreq(height, device=device)
+    fx = torch.fft.fftfreq(width, device=device)
+    yy, xx = torch.meshgrid(fy, fx, indexing="ij")
+    max_radius = math.sqrt(0.5 ** 2 + 0.5 ** 2)
+    return torch.sqrt(xx.square() + yy.square()) / max_radius
+
+
+def summed_power_spectrum(normalized_images):
+    """Sum non-DC RGB Fourier power over a batch of CLIP-normalized images."""
+    if normalized_images.ndim != 4 or normalized_images.shape[1] != 3:
+        raise ValueError("normalized_images must have shape [N, 3, H, W]")
+
+    work_images = normalized_images.detach().float().cpu().contiguous()
+    mean = work_images.new_tensor(CLIP_MEAN).view(1, 3, 1, 1)
+    std = work_images.new_tensor(CLIP_STD).view(1, 3, 1, 1)
+    rgb_images = ((work_images * std + mean).clamp(0.0, 1.0)).contiguous()
+    spectrum = torch.fft.fft2(rgb_images, dim=(-2, -1), norm="ortho")
+    power = spectrum.abs().square().sum(dim=(0, 1)).double()
+    power[0, 0] = 0.0
+    return power
+
+
+def equal_energy_band_edges(power_spectrum, num_bands):
+    """Find radial boundaries whose bands contain similar average power."""
+    if power_spectrum.ndim != 2:
+        raise ValueError("power_spectrum must have shape [H, W]")
+    if num_bands < 2:
+        raise ValueError("num_bands must be at least two")
+    if not torch.isfinite(power_spectrum).all() or (power_spectrum < 0).any():
+        raise ValueError("power_spectrum must contain finite, non-negative values")
+
+    height, width = power_spectrum.shape
+    radius = radial_frequency_grid(height, width, power_spectrum.device).flatten()
+    power = power_spectrum.flatten().double()
+    valid = radius > 0
+    radius = radius[valid]
+    power = power[valid]
+    total_power = power.sum()
+    if float(total_power) <= 0:
+        raise ValueError("power_spectrum must contain positive non-DC energy")
+
+    order = torch.argsort(radius)
+    sorted_radius = radius[order]
+    sorted_power = power[order]
+    unique_radius, inverse = torch.unique_consecutive(
+        sorted_radius, return_inverse=True
+    )
+    radial_power = torch.zeros(
+        unique_radius.numel(), dtype=sorted_power.dtype, device=sorted_power.device
+    )
+    radial_power.scatter_add_(0, inverse, sorted_power)
+    cumulative_power = torch.cumsum(radial_power, dim=0)
+
+    edges = [0.0]
+    for split_index in range(1, num_bands):
+        target = total_power * (float(split_index) / num_bands)
+        radius_index = int(torch.searchsorted(cumulative_power, target))
+        radius_index = min(radius_index, unique_radius.numel() - 2)
+        boundary = 0.5 * (
+            unique_radius[radius_index] + unique_radius[radius_index + 1]
+        )
+        edges.append(float(boundary))
+    edges.append(1.0)
+
+    if any(left >= right for left, right in zip(edges[:-1], edges[1:])):
+        raise RuntimeError("estimated equal-energy band edges are not strictly increasing")
+    return edges
+
+
+def band_energy_fractions(power_spectrum, band_edges):
+    height, width = power_spectrum.shape
+    radius = radial_frequency_grid(height, width, power_spectrum.device)
+    total = float(power_spectrum.sum())
+    if total <= 0:
+        raise ValueError("power_spectrum must contain positive energy")
+
+    fractions = []
+    for index, (lower, upper) in enumerate(zip(band_edges[:-1], band_edges[1:])):
+        if index == len(band_edges) - 2:
+            mask = (radius >= lower) & (radius <= upper)
+        else:
+            mask = (radius >= lower) & (radius < upper)
+        mask[0, 0] = False
+        fractions.append(float(power_spectrum[mask].sum()) / total)
+    return fractions
+
+
 class FourierBandStop:
     """Create frequency counterfactuals by removing radial Fourier bands.
 
@@ -22,31 +110,31 @@ class FourierBandStop:
     """
 
     def __init__(self, band_names, band_edges, fft_device="auto"):
-        if len(band_edges) != len(band_names) + 1:
+        if fft_device not in ("auto", "cpu", "cuda"):
+            raise ValueError("fft_device must be one of: auto, cpu, cuda")
+
+        self.band_names = list(band_names)
+        self.fft_device = fft_device
+        self._cuda_fft_failed = False
+        self._mask_cache = {}
+        self.set_band_edges(band_edges)
+
+    def set_band_edges(self, band_edges):
+        if len(band_edges) != len(self.band_names) + 1:
             raise ValueError("band_edges must contain exactly len(band_names) + 1 values")
         if band_edges[0] != 0.0 or band_edges[-1] != 1.0:
             raise ValueError("band_edges must start at 0.0 and end at 1.0")
         if any(left >= right for left, right in zip(band_edges[:-1], band_edges[1:])):
             raise ValueError("band_edges must be strictly increasing")
-        if fft_device not in ("auto", "cpu", "cuda"):
-            raise ValueError("fft_device must be one of: auto, cpu, cuda")
-
-        self.band_names = list(band_names)
         self.band_edges = [float(edge) for edge in band_edges]
-        self.fft_device = fft_device
-        self._cuda_fft_failed = False
-        self._mask_cache = {}
+        self._mask_cache.clear()
 
     def _masks(self, height, width, device):
         key = (height, width, str(device))
         if key in self._mask_cache:
             return self._mask_cache[key]
 
-        fy = torch.fft.fftfreq(height, device=device)
-        fx = torch.fft.fftfreq(width, device=device)
-        yy, xx = torch.meshgrid(fy, fx, indexing="ij")
-        max_radius = math.sqrt(0.5 ** 2 + 0.5 ** 2)
-        radius = torch.sqrt(xx.square() + yy.square()) / max_radius
+        radius = radial_frequency_grid(height, width, device)
 
         masks = []
         for index, (lower, upper) in enumerate(zip(self.band_edges[:-1], self.band_edges[1:])):

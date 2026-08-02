@@ -34,7 +34,11 @@ ANALYSIS:
     ANALYSIS_ONLY: True
     OUTPUT_DIR: "./outputs/frequency_analysis"
     BAND_NAMES: ["low", "mid", "high"]
+    BAND_MODE: "equal_energy"
+    # Used only as initialization/fallback when BAND_MODE is "fixed".
     BAND_EDGES: [0.0, 0.15, 0.35, 1.0]
+    # Estimate equal-energy boundaries from deterministic center crops of base data.
+    ENERGY_SAMPLES_PER_CLASS: 20
     SAMPLES_PER_CLASS: 5
     WEIGHT_TEMPERATURE: 0.05
     # "all" makes class contributions comparable across sessions. It is an

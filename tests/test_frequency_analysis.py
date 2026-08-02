@@ -7,6 +7,8 @@ from utils.frequency_analysis import (
     CLIP_STD,
     FourierBandStop,
     FrequencyContributionAccumulator,
+    band_energy_fractions,
+    equal_energy_band_edges,
     semantic_margins,
     summarize_frequency_records,
 )
@@ -47,6 +49,26 @@ class FourierBandStopTest(unittest.TestCase):
         self.assertEqual(float(coverage[0, 0, 0, 0]), 0.0)
         non_dc = coverage.flatten()[1:]
         self.assertTrue(torch.all(non_dc == 1))
+
+    def test_equal_energy_edges_balance_a_power_spectrum(self):
+        power = torch.ones(64, 64, dtype=torch.float64)
+        power[0, 0] = 0.0
+        edges = equal_energy_band_edges(power, num_bands=3)
+        fractions = band_energy_fractions(power, edges)
+        self.assertEqual(edges[0], 0.0)
+        self.assertEqual(edges[-1], 1.0)
+        self.assertTrue(all(left < right for left, right in zip(edges[:-1], edges[1:])))
+        for fraction in fractions:
+            self.assertAlmostEqual(fraction, 1.0 / 3.0, delta=0.03)
+
+    def test_updating_edges_invalidates_cached_masks(self):
+        transform = FourierBandStop(
+            ['low', 'mid', 'high'], [0.0, 0.15, 0.35, 1.0]
+        )
+        original_masks = transform._masks(16, 16, torch.device('cpu'))
+        transform.set_band_edges([0.0, 0.1, 0.2, 1.0])
+        updated_masks = transform._masks(16, 16, torch.device('cpu'))
+        self.assertIsNot(original_masks, updated_masks)
 
 
 class FrequencyStatisticsTest(unittest.TestCase):

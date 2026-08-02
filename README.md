@@ -54,11 +54,14 @@ Run the training-free frequency counterfactual diagnostic with:
 python main.py --data_cfg ./configs/datasets/cifar100.yaml --train_cfg ./configs/trainers/bimc_freq_analysis.yaml
 ~~~
 
-The diagnostic samples five deterministic, center-cropped training images per
-class, removes low-, mid-, and high-frequency radial Fourier bands in turn, and
-measures the resulting drop in CLIP's correct-class semantic margin. It does not
-change or train the BiMC classifier. Per-session and all-class JSON/CSV reports
-are written under `outputs/frequency_analysis/<dataset>_seed<seed>/`.
+The diagnostic first estimates three approximately equal-energy radial Fourier
+bands from base-session images. It then samples five deterministic,
+center-cropped training images per class, removes each band in turn, and measures
+the resulting drop in CLIP's correct-class semantic margin. It does not change
+or train the BiMC classifier. Per-session and all-class JSON/CSV reports are
+written under
+`outputs/frequency_analysis/<dataset>_seed<seed>_equal_energy/`. Existing
+fixed-band reports are not overwritten.
 
 In `all_classes_frequency_contribution.json`, inspect
 `class_effect_eta_squared`, the dominant-band distribution, and
@@ -73,6 +76,28 @@ PyTorch 1.13.1 CUDA environments that can raise `CUFFT_INTERNAL_ERROR` for
 batched 224x224 transforms. Only counterfactual image generation runs on CPU;
 CLIP encoding still runs on CUDA. `FFT_DEVICE: auto` first tries the input
 device and automatically falls back to CPU after a cuFFT failure.
+
+Run the same analysis on all three benchmarks with:
+
+~~~BASH
+python main.py --data_cfg ./configs/datasets/cifar100.yaml --train_cfg ./configs/trainers/bimc_freq_analysis.yaml
+python main.py --data_cfg ./configs/datasets/miniimagenet.yaml --train_cfg ./configs/trainers/bimc_freq_analysis.yaml
+python main.py --data_cfg ./configs/datasets/cub200.yaml --train_cfg ./configs/trainers/bimc_freq_analysis.yaml
+~~~
+
+Use the same configuration and seeds for cross-dataset comparisons. CIFAR100 is
+low-resolution and mainly tests coarse structural cues; mini-ImageNet adds more
+diverse natural-image spectra, while CUB200 tests whether fine-grained classes
+derive more benefit from mid- and high-frequency detail.
+
+For repeated runs, override the YAML seed without duplicating configuration
+files, for example:
+
+~~~BASH
+for seed in 1 2 3 4 5; do
+  python main.py --data_cfg ./configs/datasets/cifar100.yaml --train_cfg ./configs/trainers/bimc_freq_analysis.yaml --seed $seed
+done
+~~~
 
 ## Acknowledgment
 
