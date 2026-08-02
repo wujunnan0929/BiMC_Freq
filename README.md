@@ -113,15 +113,23 @@ python main.py --data_cfg ./configs/datasets/cub200.yaml --train_cfg ./configs/t
 ~~~
 
 Reports are written under
-`outputs/frequency_predictivity_v2/<dataset>_seed<seed>_equal_energy/`; the
-separate directory preserves legacy Experiment B outputs. The final
+`outputs/frequency_predictivity_v3/<dataset>_seed<seed>_equal_energy/`; the
+separate directory preserves legacy v2 outputs. The final
 session JSON contains accuracy comparisons, Pearson/Spearman support-to-test
 correlations, harmful-frequency precision/recall, exact paired McNemar tests,
-paired bootstrap confidence intervals, a conservative uncertainty gate, and a
-test-only threshold sensitivity sweep. The accompanying `_samples.csv` stores
-paired predictions for independent significance checks. In every gate, weight
-1 uses the complete-image logit for that candidate class and weight 0 uses its
-high-frequency-removed-image logit.
+paired bootstrap confidence intervals, macro/base/novel accuracy, class
+improvement/degradation/zeroing counts, and test-only threshold/alpha
+sensitivity sweeps. The accompanying `_samples.csv` stores paired predictions
+for independent significance checks. With `SAVE_LOGITS=True`, `_logits.pt`
+also stores CPU full/removed logits, labels, and support statistics so later
+fusion/calibration variants can be evaluated without re-encoding the images.
+
+The v2 hard replacement remains in the report only as a destructive diagnostic.
+The primary constrained residual gate uses
+`full_weight = 1 - alpha * (1 - support_gate)`; with the default `alpha=0.2`,
+every candidate class retains at least 80% of its full-image logit. Alpha must
+be selected without test labels (for example on a base-class validation split),
+not from the reported test sensitivity sweep.
 
 The `test_label_margin_gate` and `test_label_accuracy_gate` use test labels and
 are descriptive leaked references, not oracle upper bounds on global accuracy.
@@ -135,6 +143,9 @@ band control (`high = [0.35, 1.0]`) with:
 ~~~BASH
 python main.py --data_cfg ./configs/datasets/cub200.yaml --train_cfg ./configs/trainers/bimc_freq_predictivity_fixed.yaml --seed 1
 ~~~
+
+Fixed-band reports are written under
+`outputs/frequency_predictivity_fixed_v3/<dataset>_seed<seed>_fixed/`.
 
 ## Acknowledgment
 

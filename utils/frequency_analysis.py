@@ -274,6 +274,106 @@ def spearman_correlation(x, y):
     return pearson_correlation(_average_ranks(x), _average_ranks(y))
 
 
+def residual_full_weights(full_gate, alpha):
+    """Keep a bounded share of full-image logits while applying a class gate."""
+    alpha = float(alpha)
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError("alpha must lie between 0 and 1")
+    full_gate = torch.as_tensor(full_gate).float()
+    if not torch.isfinite(full_gate).all():
+        raise ValueError("full_gate must contain only finite values")
+    if bool(((full_gate < 0.0) | (full_gate > 1.0)).any()):
+        raise ValueError("full_gate values must lie between 0 and 1")
+    return 1.0 - alpha * (1.0 - full_gate)
+
+
+def per_class_accuracies(predictions, labels, num_classes):
+    """Return per-class accuracies and sample counts for integer predictions."""
+    predictions = torch.as_tensor(predictions).long().flatten().cpu()
+    labels = torch.as_tensor(labels).long().flatten().cpu()
+    num_classes = int(num_classes)
+    if predictions.shape != labels.shape:
+        raise ValueError("predictions and labels must have matching shapes")
+    if predictions.numel() == 0:
+        raise ValueError("predictions and labels must be non-empty")
+    if num_classes <= 0:
+        raise ValueError("num_classes must be positive")
+    if int(labels.min()) < 0 or int(labels.max()) >= num_classes:
+        raise ValueError("labels must lie within [0, num_classes)")
+
+    counts = torch.bincount(labels, minlength=num_classes)
+    correct_counts = torch.bincount(
+        labels[predictions == labels], minlength=num_classes
+    )
+    accuracies = torch.full((num_classes,), float("nan"), dtype=torch.float32)
+    present = counts > 0
+    accuracies[present] = (
+        correct_counts[present].float() / counts[present].float()
+    )
+    return accuracies, counts
+
+
+def classification_diagnostics(
+    predictions,
+    labels,
+    num_classes,
+    num_base_classes,
+    reference_predictions=None,
+):
+    """Summarize micro/macro FSCIL accuracy and optional class-wise changes."""
+    predictions = torch.as_tensor(predictions).long().flatten().cpu()
+    labels = torch.as_tensor(labels).long().flatten().cpu()
+    num_classes = int(num_classes)
+    num_base_classes = min(max(int(num_base_classes), 0), num_classes)
+    class_accuracy, class_counts = per_class_accuracies(
+        predictions, labels, num_classes
+    )
+    present = class_counts > 0
+
+    def subset_accuracy(mask):
+        if not bool(mask.any()):
+            return None
+        return float((predictions[mask] == labels[mask]).float().mean())
+
+    def subset_macro(start, end):
+        subset_present = present[start:end]
+        if not bool(subset_present.any()):
+            return None
+        return float(class_accuracy[start:end][subset_present].mean())
+
+    base_mask = labels < num_base_classes
+    novel_mask = labels >= num_base_classes
+    result = {
+        "micro_accuracy": float((predictions == labels).float().mean()),
+        "macro_accuracy": float(class_accuracy[present].mean()),
+        "base_micro_accuracy": subset_accuracy(base_mask),
+        "base_macro_accuracy": subset_macro(0, num_base_classes),
+        "novel_micro_accuracy": subset_accuracy(novel_mask),
+        "novel_macro_accuracy": subset_macro(num_base_classes, num_classes),
+        "zero_accuracy_classes": int((class_accuracy[present] == 0).sum()),
+    }
+
+    if reference_predictions is not None:
+        reference_accuracy, reference_counts = per_class_accuracies(
+            reference_predictions, labels, num_classes
+        )
+        comparable = present & (reference_counts > 0)
+        delta = class_accuracy[comparable] - reference_accuracy[comparable]
+        result["class_change_vs_reference"] = {
+            "improved_classes": int((delta > 0).sum()),
+            "degraded_classes": int((delta < 0).sum()),
+            "unchanged_classes": int((delta == 0).sum()),
+            "zeroed_classes": int(
+                (
+                    (reference_accuracy[comparable] > 0)
+                    & (class_accuracy[comparable] == 0)
+                ).sum()
+            ),
+            "macro_accuracy_delta": float(delta.mean()),
+        }
+    return result
+
+
 class FrequencyContributionAccumulator:
     def __init__(self, band_names, weight_temperature=0.05):
         if weight_temperature <= 0:
@@ -476,9 +576,17 @@ def write_predictivity_report(output_dir, stem, class_records, summary, metadata
         "predicted_hard_use_full",
         "predicted_confident_hard_use_full",
         "predicted_soft_use_full_weight",
+        "predicted_residual_hard_full_weight",
+        "predicted_residual_confident_full_weight",
+        "predicted_residual_soft_full_weight",
+        "predicted_hard_accuracy",
+        "predicted_residual_hard_accuracy",
+        "predicted_residual_confident_accuracy",
+        "predicted_residual_soft_accuracy",
         "test_label_margin_use_full",
         "test_label_accuracy_use_full",
         "test_optimized_coordinate_use_full",
+        "test_optimized_coordinate_accuracy",
     ]
     with open(csv_path, "w", encoding="utf-8", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
@@ -500,12 +608,18 @@ def write_sample_predictions(output_dir, stem, sample_records):
         "predicted_hard_prediction",
         "predicted_confident_hard_prediction",
         "predicted_soft_prediction",
+        "predicted_residual_hard_prediction",
+        "predicted_residual_confident_prediction",
+        "predicted_residual_soft_prediction",
         "test_label_margin_prediction",
         "test_label_accuracy_prediction",
         "test_optimized_coordinate_prediction",
         "full_correct",
         "predicted_hard_correct",
         "predicted_confident_hard_correct",
+        "predicted_residual_hard_correct",
+        "predicted_residual_confident_correct",
+        "predicted_residual_soft_correct",
         "test_optimized_coordinate_correct",
     ]
     with open(csv_path, "w", encoding="utf-8", newline="") as file:

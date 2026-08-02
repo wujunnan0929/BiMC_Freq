@@ -32,8 +32,8 @@ ANALYSIS:
   FREQUENCY:
     ENABLED: True
     ANALYSIS_ONLY: True
-    # Keep the revised statistics separate from legacy Experiment B outputs.
-    OUTPUT_DIR: "./outputs/frequency_predictivity_v2"
+    # Keep constrained residual-gate results separate from v2 outputs.
+    OUTPUT_DIR: "./outputs/frequency_predictivity_v3"
     BAND_NAMES: ["low", "mid", "high"]
     BAND_MODE: "equal_energy"
     BAND_EDGES: [0.0, 0.15, 0.35, 1.0]
@@ -56,7 +56,12 @@ ANALYSIS:
       RELIABILITY_EPS: 0.000001
       # Conservative gate uses mean + z * SEM before removing a band.
       CONFIDENCE_Z: 1.0
+      # Residual fusion keeps at least 1-alpha of every full-image class logit.
+      RESIDUAL_ALPHA: 0.2
+      # Test-only sensitivity report; do not select alpha from test accuracy.
+      RESIDUAL_ALPHA_SWEEP: [0.05, 0.1, 0.2, 0.3, 0.5]
       PAIRED_BOOTSTRAP_SAMPLES: 2000
       # Test-label local search is reported only as a leaked diagnostic ceiling.
       COORDINATE_ASCENT_MAX_PASSES: 3
       SAVE_SAMPLE_PREDICTIONS: True
+      SAVE_LOGITS: True

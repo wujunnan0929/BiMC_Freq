@@ -32,7 +32,7 @@ ANALYSIS:
   FREQUENCY:
     ENABLED: True
     ANALYSIS_ONLY: True
-    OUTPUT_DIR: "./outputs/frequency_predictivity_fixed_v2"
+    OUTPUT_DIR: "./outputs/frequency_predictivity_fixed_v3"
     BAND_NAMES: ["low", "mid", "high"]
     # Fixed radial bands make "high" the narrower [0.35, 1.0] intervention.
     BAND_MODE: "fixed"
@@ -51,6 +51,9 @@ ANALYSIS:
       SOFT_GATE_TEMPERATURE: 0.01
       RELIABILITY_EPS: 0.000001
       CONFIDENCE_Z: 1.0
+      RESIDUAL_ALPHA: 0.2
+      RESIDUAL_ALPHA_SWEEP: [0.05, 0.1, 0.2, 0.3, 0.5]
       PAIRED_BOOTSTRAP_SAMPLES: 2000
       COORDINATE_ASCENT_MAX_PASSES: 3
       SAVE_SAMPLE_PREDICTIONS: True
+      SAVE_LOGITS: True

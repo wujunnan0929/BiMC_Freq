@@ -8,11 +8,14 @@ from utils.frequency_analysis import (
     FourierBandStop,
     FrequencyContributionAccumulator,
     band_energy_fractions,
+    classification_diagnostics,
     coordinate_ascent_class_gate,
     equal_energy_band_edges,
     exact_mcnemar_pvalue,
     paired_accuracy_statistics,
     pearson_correlation,
+    per_class_accuracies,
+    residual_full_weights,
     semantic_margins,
     spearman_correlation,
     summarize_frequency_records,
@@ -168,6 +171,42 @@ class FrequencyStatisticsTest(unittest.TestCase):
         self.assertAlmostEqual(result['accuracy'], 1.0)
         self.assertGreaterEqual(result['accepted_flips'], 1)
         self.assertEqual(result['correct_trajectory'][0], 2)
+
+    def test_residual_full_weights_preserve_a_full_logit_floor(self):
+        weights = residual_full_weights(torch.tensor([1.0, 0.0, 0.25]), 0.2)
+        self.assertTrue(
+            torch.allclose(weights, torch.tensor([1.0, 0.8, 0.85]))
+        )
+        self.assertGreaterEqual(float(weights.min()), 0.8)
+        with self.assertRaises(ValueError):
+            residual_full_weights(torch.tensor([1.0, 0.0]), 1.1)
+
+    def test_classification_diagnostics_include_fscil_class_changes(self):
+        labels = torch.tensor([0, 0, 1, 1, 2, 2])
+        reference = torch.tensor([0, 1, 1, 0, 2, 0])
+        candidate = torch.tensor([0, 0, 1, 1, 0, 0])
+        class_accuracy, counts = per_class_accuracies(candidate, labels, 3)
+        self.assertTrue(torch.equal(counts, torch.tensor([2, 2, 2])))
+        self.assertTrue(
+            torch.allclose(class_accuracy, torch.tensor([1.0, 1.0, 0.0]))
+        )
+
+        result = classification_diagnostics(
+            candidate,
+            labels,
+            num_classes=3,
+            num_base_classes=2,
+            reference_predictions=reference,
+        )
+        self.assertAlmostEqual(result['micro_accuracy'], 4.0 / 6.0)
+        self.assertAlmostEqual(result['macro_accuracy'], 2.0 / 3.0)
+        self.assertAlmostEqual(result['base_micro_accuracy'], 1.0)
+        self.assertAlmostEqual(result['novel_micro_accuracy'], 0.0)
+        self.assertEqual(result['zero_accuracy_classes'], 1)
+        changes = result['class_change_vs_reference']
+        self.assertEqual(changes['improved_classes'], 2)
+        self.assertEqual(changes['degraded_classes'], 1)
+        self.assertEqual(changes['zeroed_classes'], 1)
 
 
 if __name__ == '__main__':

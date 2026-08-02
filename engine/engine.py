@@ -13,10 +13,13 @@ from utils.frequency_analysis import (
     FourierBandStop,
     FrequencyContributionAccumulator,
     band_energy_fractions,
+    classification_diagnostics,
     coordinate_ascent_class_gate,
     equal_energy_band_edges,
     paired_accuracy_statistics,
     pearson_correlation,
+    per_class_accuracies,
+    residual_full_weights,
     semantic_margins,
     spearman_correlation,
     summed_power_spectrum,
@@ -93,6 +96,19 @@ class Runner:
                 raise ValueError(
                     'ANALYSIS.FREQUENCY.PREDICTIVITY.PAIRED_BOOTSTRAP_SAMPLES '
                     'must be non-negative'
+                )
+            if not 0.0 <= predictivity_cfg.RESIDUAL_ALPHA <= 1.0:
+                raise ValueError(
+                    'ANALYSIS.FREQUENCY.PREDICTIVITY.RESIDUAL_ALPHA must lie '
+                    'between 0 and 1'
+                )
+            if any(
+                not 0.0 <= value <= 1.0
+                for value in predictivity_cfg.RESIDUAL_ALPHA_SWEEP
+            ):
+                raise ValueError(
+                    'ANALYSIS.FREQUENCY.PREDICTIVITY.RESIDUAL_ALPHA_SWEEP '
+                    'values must lie between 0 and 1'
                 )
             if predictivity_cfg.COORDINATE_ASCENT_MAX_PASSES <= 0:
                 raise ValueError(
@@ -213,14 +229,6 @@ class Runner:
     @torch.no_grad()
     def prepare_frequency_bands(self):
         frequency_cfg = self.cfg.ANALYSIS.FREQUENCY
-        if frequency_cfg.BAND_MODE == 'fixed':
-            print(
-                'Using fixed radial frequency edges: {}'.format(
-                    list(self.frequency_band_stop.band_edges)
-                )
-            )
-            return
-
         # Dataset construction samples classes with NumPy's global RNG. Restore
         # its state afterwards so the subsequent 5-shot analysis uses the same
         # samples it would have used without this calibration pass.
@@ -235,7 +243,7 @@ class Runner:
         np.random.set_state(numpy_rng_state)
 
         print(
-            'Estimating equal-energy frequency bands from {} base images per class ...'.format(
+            'Estimating base-set frequency energy from {} images per class ...'.format(
                 frequency_cfg.ENERGY_SAMPLES_PER_CLASS
             )
         )
@@ -247,14 +255,19 @@ class Runner:
             else:
                 power_spectrum += batch_power
 
-        estimated_edges = equal_energy_band_edges(
-            power_spectrum, len(frequency_cfg.BAND_NAMES)
-        )
-        self.frequency_band_stop.set_band_edges(estimated_edges)
+        if frequency_cfg.BAND_MODE == 'equal_energy':
+            resolved_edges = equal_energy_band_edges(
+                power_spectrum, len(frequency_cfg.BAND_NAMES)
+            )
+            self.frequency_band_stop.set_band_edges(resolved_edges)
+            print('Estimated radial band edges: {}'.format(resolved_edges))
+        else:
+            resolved_edges = list(self.frequency_band_stop.band_edges)
+            print('Using fixed radial frequency edges: {}'.format(resolved_edges))
+
         self.frequency_band_energy_fractions = band_energy_fractions(
-            power_spectrum, estimated_edges
+            power_spectrum, resolved_edges
         )
-        print('Estimated radial band edges: {}'.format(estimated_edges))
         print(
             'Measured base-set band energy fractions: {}'.format(
                 self.frequency_band_energy_fractions
@@ -459,6 +472,16 @@ class Runner:
             (support_mean - hard_gate_threshold)
             / predictivity_cfg.SOFT_GATE_TEMPERATURE
         )
+        residual_alpha = float(predictivity_cfg.RESIDUAL_ALPHA)
+        predicted_residual_hard_gate = residual_full_weights(
+            predicted_hard_gate, residual_alpha
+        )
+        predicted_residual_confident_gate = residual_full_weights(
+            predicted_confident_hard_gate, residual_alpha
+        )
+        predicted_residual_soft_gate = residual_full_weights(
+            predicted_soft_gate, residual_alpha
+        )
 
         test_loader = self.data_manager.get_dataloader(
             task_id, source='test', mode='test'
@@ -545,6 +568,20 @@ class Runner:
             gated_logits(predicted_soft_gate)
         )
         (
+            predicted_residual_hard_predictions,
+            predicted_residual_hard_accuracy,
+        ) = predictions_and_accuracy(gated_logits(predicted_residual_hard_gate))
+        (
+            predicted_residual_confident_predictions,
+            predicted_residual_confident_accuracy,
+        ) = predictions_and_accuracy(
+            gated_logits(predicted_residual_confident_gate)
+        )
+        (
+            predicted_residual_soft_predictions,
+            predicted_residual_soft_accuracy,
+        ) = predictions_and_accuracy(gated_logits(predicted_residual_soft_gate))
+        (
             test_label_margin_predictions,
             test_label_margin_accuracy,
         ) = predictions_and_accuracy(gated_logits(test_label_margin_gate))
@@ -587,6 +624,36 @@ class Runner:
                 'accuracy': threshold_accuracy,
             })
 
+        residual_alpha_sweep = []
+        for alpha in predictivity_cfg.RESIDUAL_ALPHA_SWEEP:
+            alpha_gate = residual_full_weights(predicted_hard_gate, float(alpha))
+            alpha_predictions, alpha_accuracy = predictions_and_accuracy(
+                gated_logits(alpha_gate)
+            )
+            alpha_diagnostics = classification_diagnostics(
+                alpha_predictions,
+                labels,
+                num_classes,
+                self.cfg.DATASET.NUM_INIT_CLS,
+                reference_predictions=full_predictions,
+            )
+            residual_alpha_sweep.append({
+                'alpha': float(alpha),
+                'minimum_full_logit_weight': 1.0 - float(alpha),
+                'classes_adjusted': int((predicted_hard_gate < 0.5).sum()),
+                'accuracy': alpha_accuracy,
+                'macro_accuracy': alpha_diagnostics['macro_accuracy'],
+                'base_accuracy': alpha_diagnostics['base_micro_accuracy'],
+                'novel_accuracy': alpha_diagnostics['novel_micro_accuracy'],
+                'net_correct': int(
+                    (alpha_predictions == labels).sum()
+                    - (full_predictions == labels).sum()
+                ),
+                'class_change_vs_full': alpha_diagnostics[
+                    'class_change_vs_reference'
+                ],
+            })
+
         bootstrap_samples = int(predictivity_cfg.PAIRED_BOOTSTRAP_SAMPLES)
         bootstrap_seed = int(self.cfg.SEED) * 1000 + int(task_id)
         full_correct = full_predictions == labels
@@ -595,6 +662,11 @@ class Runner:
             'predicted_hard_gate': predicted_hard_predictions,
             'predicted_confident_hard_gate': predicted_confident_hard_predictions,
             'predicted_soft_gate': predicted_soft_predictions,
+            'predicted_residual_hard_gate': predicted_residual_hard_predictions,
+            'predicted_residual_confident_gate': (
+                predicted_residual_confident_predictions
+            ),
+            'predicted_residual_soft_gate': predicted_residual_soft_predictions,
             'test_label_margin_gate': test_label_margin_predictions,
             'test_label_accuracy_gate': test_label_accuracy_predictions,
             'test_optimized_coordinate_gate': test_optimized_coordinate_predictions,
@@ -607,6 +679,39 @@ class Runner:
                 seed=bootstrap_seed,
             )
             for name, predictions in comparison_predictions.items()
+        }
+
+        all_method_predictions = {
+            'full': full_predictions,
+            'band_removed': removed_predictions,
+            'equal_mix': equal_mix_predictions,
+            'predicted_hard_gate': predicted_hard_predictions,
+            'predicted_confident_hard_gate': predicted_confident_hard_predictions,
+            'predicted_soft_gate': predicted_soft_predictions,
+            'predicted_residual_hard_gate': predicted_residual_hard_predictions,
+            'predicted_residual_confident_gate': (
+                predicted_residual_confident_predictions
+            ),
+            'predicted_residual_soft_gate': predicted_residual_soft_predictions,
+            'test_label_margin_gate': test_label_margin_predictions,
+            'test_label_accuracy_gate': test_label_accuracy_predictions,
+            'test_optimized_coordinate_gate': test_optimized_coordinate_predictions,
+        }
+        accuracy_by_scope = {
+            name: classification_diagnostics(
+                predictions,
+                labels,
+                num_classes,
+                self.cfg.DATASET.NUM_INIT_CLS,
+                reference_predictions=(
+                    None if name == 'full' else full_predictions
+                ),
+            )
+            for name, predictions in all_method_predictions.items()
+        }
+        method_class_accuracy = {
+            name: per_class_accuracies(predictions, labels, num_classes)[0]
+            for name, predictions in all_method_predictions.items()
         }
 
         predicted_harmful = support_mean < 0
@@ -648,10 +753,36 @@ class Runner:
                     predicted_confident_hard_gate[class_id]
                 ),
                 'predicted_soft_use_full_weight': float(predicted_soft_gate[class_id]),
+                'predicted_residual_hard_full_weight': float(
+                    predicted_residual_hard_gate[class_id]
+                ),
+                'predicted_residual_confident_full_weight': float(
+                    predicted_residual_confident_gate[class_id]
+                ),
+                'predicted_residual_soft_full_weight': float(
+                    predicted_residual_soft_gate[class_id]
+                ),
+                'predicted_hard_accuracy': float(
+                    method_class_accuracy['predicted_hard_gate'][class_id]
+                ),
+                'predicted_residual_hard_accuracy': float(
+                    method_class_accuracy['predicted_residual_hard_gate'][class_id]
+                ),
+                'predicted_residual_confident_accuracy': float(
+                    method_class_accuracy[
+                        'predicted_residual_confident_gate'
+                    ][class_id]
+                ),
+                'predicted_residual_soft_accuracy': float(
+                    method_class_accuracy['predicted_residual_soft_gate'][class_id]
+                ),
                 'test_label_margin_use_full': int(test_label_margin_gate[class_id]),
                 'test_label_accuracy_use_full': int(test_label_accuracy_gate[class_id]),
                 'test_optimized_coordinate_use_full': int(
                     test_optimized_coordinate_gate[class_id]
+                ),
+                'test_optimized_coordinate_accuracy': float(
+                    method_class_accuracy['test_optimized_coordinate_gate'][class_id]
                 ),
             })
 
@@ -667,12 +798,19 @@ class Runner:
                 'predicted_hard_gate': predicted_hard_accuracy,
                 'predicted_confident_hard_gate': predicted_confident_hard_accuracy,
                 'predicted_soft_gate': predicted_soft_accuracy,
+                'predicted_residual_hard_gate': predicted_residual_hard_accuracy,
+                'predicted_residual_confident_gate': (
+                    predicted_residual_confident_accuracy
+                ),
+                'predicted_residual_soft_gate': predicted_residual_soft_accuracy,
                 'test_label_margin_gate': test_label_margin_accuracy,
                 'test_label_accuracy_gate': test_label_accuracy_accuracy,
                 'test_optimized_coordinate_gate': test_optimized_coordinate_accuracy,
             },
+            'accuracy_by_scope': accuracy_by_scope,
             'paired_accuracy_vs_full': paired_accuracy_vs_full,
             'test_threshold_sweep': threshold_sweep,
+            'test_residual_alpha_sweep': residual_alpha_sweep,
             'test_optimized_coordinate_search': {
                 'selected_start': coordinate_start_name,
                 'test_leakage': True,
@@ -726,18 +864,30 @@ class Runner:
             competitor_scope='classes accumulated through task {}'.format(task_id)
         )
         metadata['predictivity'] = {
-            'evaluation_version': 2,
+            'evaluation_version': 3,
             'strict_session_time': frequency_cfg.COMPETITOR_SCOPE == 'accumulated',
             'soft_gate_temperature': float(
                 predictivity_cfg.SOFT_GATE_TEMPERATURE
             ),
             'hard_gate_threshold': hard_gate_threshold,
             'confidence_z': float(predictivity_cfg.CONFIDENCE_Z),
+            'residual_alpha': residual_alpha,
+            'minimum_residual_full_logit_weight': 1.0 - residual_alpha,
             'reliability_eps': float(predictivity_cfg.RELIABILITY_EPS),
             'paired_bootstrap_samples': bootstrap_samples,
+            'saved_logits': bool(predictivity_cfg.SAVE_LOGITS),
             'gate_interpretation': (
                 'Each gate controls a candidate-class logit column: 1 uses the '
                 'full-image logit and 0 uses the band-removed-image logit.'
+            ),
+            'legacy_hard_gate_warning': (
+                'predicted_hard_gate is retained only as a destructive v2 '
+                'diagnostic; the residual gates preserve a configurable share '
+                'of every full-image class logit.'
+            ),
+            'residual_alpha_sweep_warning': (
+                'The alpha sweep uses test accuracy only for sensitivity '
+                'reporting and must not be used for hyperparameter selection.'
             ),
             'test_label_gate_warning': (
                 'Test-label gates are descriptive leaked references, not oracle '
@@ -756,6 +906,26 @@ class Runner:
             summary,
             metadata,
         )
+        logits_path = None
+        if predictivity_cfg.SAVE_LOGITS:
+            logits_path = os.path.join(
+                self.frequency_output_dir, stem + '_logits.pt'
+            )
+            torch.save({
+                'evaluation_version': 3,
+                'dataset': self.cfg.DATASET.NAME,
+                'seed': int(self.cfg.SEED),
+                'task_id': int(task_id),
+                'band': band_name,
+                'class_ids': torch.as_tensor(accumulated_class_ids).long(),
+                'class_names': [str(name) for name in class_names],
+                'labels': labels,
+                'support_mean': support_mean,
+                'support_std': support_std,
+                'support_sem': support_sem,
+                'full_logits': full_logits,
+                'band_removed_logits': removed_logits,
+            }, logits_path)
         sample_csv_path = None
         if predictivity_cfg.SAVE_SAMPLE_PREDICTIONS:
             sample_records = []
@@ -775,6 +945,15 @@ class Runner:
                     'predicted_soft_prediction': int(
                         predicted_soft_predictions[sample_index]
                     ),
+                    'predicted_residual_hard_prediction': int(
+                        predicted_residual_hard_predictions[sample_index]
+                    ),
+                    'predicted_residual_confident_prediction': int(
+                        predicted_residual_confident_predictions[sample_index]
+                    ),
+                    'predicted_residual_soft_prediction': int(
+                        predicted_residual_soft_predictions[sample_index]
+                    ),
                     'test_label_margin_prediction': int(
                         test_label_margin_predictions[sample_index]
                     ),
@@ -792,6 +971,18 @@ class Runner:
                         predicted_confident_hard_predictions[sample_index]
                         == labels[sample_index]
                     ),
+                    'predicted_residual_hard_correct': int(
+                        predicted_residual_hard_predictions[sample_index]
+                        == labels[sample_index]
+                    ),
+                    'predicted_residual_confident_correct': int(
+                        predicted_residual_confident_predictions[sample_index]
+                        == labels[sample_index]
+                    ),
+                    'predicted_residual_soft_correct': int(
+                        predicted_residual_soft_predictions[sample_index]
+                        == labels[sample_index]
+                    ),
                     'test_optimized_coordinate_correct': int(
                         test_optimized_coordinate_predictions[sample_index]
                         == labels[sample_index]
@@ -803,8 +994,8 @@ class Runner:
         self.frequency_predictivity_reports.append(summary)
         print('Frequency predictivity summary: {}'.format(summary))
         print(
-            'Saved frequency predictivity report: {}, {}, {}'.format(
-                json_path, csv_path, sample_csv_path
+            'Saved frequency predictivity report: {}, {}, {}, {}'.format(
+                json_path, csv_path, sample_csv_path, logits_path
             )
         )
     
