@@ -8,7 +8,10 @@ from utils.frequency_analysis import (
     FourierBandStop,
     FrequencyContributionAccumulator,
     band_energy_fractions,
+    coordinate_ascent_class_gate,
     equal_energy_band_edges,
+    exact_mcnemar_pvalue,
+    paired_accuracy_statistics,
     pearson_correlation,
     semantic_margins,
     spearman_correlation,
@@ -119,6 +122,52 @@ class FrequencyStatisticsTest(unittest.TestCase):
         self.assertGreater(summary['mean_pairwise_frequency_weight_l1'], 0.0)
         self.assertGreater(summary['class_effect_eta_squared']['low'], 0.0)
         self.assertGreater(summary['class_effect_eta_squared']['mid'], 0.0)
+
+    def test_exact_mcnemar_pvalue(self):
+        self.assertEqual(exact_mcnemar_pvalue(0, 0), 1.0)
+        self.assertAlmostEqual(exact_mcnemar_pvalue(0, 3), 0.25, places=7)
+        self.assertEqual(exact_mcnemar_pvalue(1, 1), 1.0)
+
+    def test_paired_accuracy_statistics(self):
+        reference = torch.tensor([True, True, False, False])
+        candidate = torch.tensor([True, False, True, False])
+        result = paired_accuracy_statistics(
+            reference, candidate, bootstrap_samples=100, seed=7
+        )
+        self.assertEqual(result['both_correct'], 1)
+        self.assertEqual(result['reference_only_correct'], 1)
+        self.assertEqual(result['candidate_only_correct'], 1)
+        self.assertEqual(result['both_wrong'], 1)
+        self.assertEqual(result['net_correct'], 0)
+        self.assertAlmostEqual(result['accuracy_delta'], 0.0)
+        self.assertAlmostEqual(result['mcnemar_exact_p'], 1.0)
+        self.assertEqual(len(result['bootstrap_accuracy_delta_ci']), 2)
+
+    def test_coordinate_ascent_class_gate_improves_accuracy(self):
+        labels = torch.tensor([0, 1, 0, 1])
+        full_logits = torch.tensor([
+            [2.0, 1.0],
+            [2.0, 1.0],
+            [2.0, 1.0],
+            [2.0, 1.0],
+        ])
+        removed_logits = torch.tensor([
+            [2.0, 0.5],
+            [0.0, 2.0],
+            [2.0, 0.5],
+            [0.0, 2.0],
+        ])
+        result = coordinate_ascent_class_gate(
+            full_logits,
+            removed_logits,
+            labels,
+            initial_gate=torch.ones(2),
+            max_passes=3,
+        )
+        self.assertEqual(result['correct'], 4)
+        self.assertAlmostEqual(result['accuracy'], 1.0)
+        self.assertGreaterEqual(result['accepted_flips'], 1)
+        self.assertEqual(result['correct_trajectory'][0], 2)
 
 
 if __name__ == '__main__':

@@ -32,31 +32,25 @@ ANALYSIS:
   FREQUENCY:
     ENABLED: True
     ANALYSIS_ONLY: True
-    # Keep the revised statistics separate from legacy Experiment B outputs.
-    OUTPUT_DIR: "./outputs/frequency_predictivity_v2"
+    OUTPUT_DIR: "./outputs/frequency_predictivity_fixed_v2"
     BAND_NAMES: ["low", "mid", "high"]
-    BAND_MODE: "equal_energy"
+    # Fixed radial bands make "high" the narrower [0.35, 1.0] intervention.
+    BAND_MODE: "fixed"
     BAND_EDGES: [0.0, 0.15, 0.35, 1.0]
     ENERGY_SAMPLES_PER_CLASS: 20
     SAMPLES_PER_CLASS: 5
     WEIGHT_TEMPERATURE: 0.05
-    # Strict FSCIL protocol: no future class names are used by support scores.
     COMPETITOR_SCOPE: "accumulated"
     FFT_DEVICE: "cpu"
     PREDICTIVITY:
       ENABLED: True
-      # Final session contains every class and avoids repeated test-set encoding.
       EVAL_SCOPE: "final"
       BAND: "high"
-      # Remove a class-logit column only when support contribution is below this.
       HARD_GATE_THRESHOLD: 0.0
-      # Test-only sensitivity report; never select a threshold from test accuracy.
       THRESHOLD_SWEEP: [-0.05, -0.02, -0.01, -0.005, 0.0]
       SOFT_GATE_TEMPERATURE: 0.01
       RELIABILITY_EPS: 0.000001
-      # Conservative gate uses mean + z * SEM before removing a band.
       CONFIDENCE_Z: 1.0
       PAIRED_BOOTSTRAP_SAMPLES: 2000
-      # Test-label local search is reported only as a leaked diagnostic ceiling.
       COORDINATE_ASCENT_MAX_PASSES: 3
       SAVE_SAMPLE_PREDICTIONS: True

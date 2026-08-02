@@ -13,7 +13,9 @@ from utils.frequency_analysis import (
     FourierBandStop,
     FrequencyContributionAccumulator,
     band_energy_fractions,
+    coordinate_ascent_class_gate,
     equal_energy_band_edges,
+    paired_accuracy_statistics,
     pearson_correlation,
     semantic_margins,
     spearman_correlation,
@@ -21,6 +23,7 @@ from utils.frequency_analysis import (
     summarize_frequency_records,
     write_frequency_records,
     write_predictivity_report,
+    write_sample_predictions,
 )
 
 
@@ -81,6 +84,20 @@ class Runner:
             if predictivity_cfg.RELIABILITY_EPS <= 0:
                 raise ValueError(
                     'ANALYSIS.FREQUENCY.PREDICTIVITY.RELIABILITY_EPS must be positive'
+                )
+            if predictivity_cfg.CONFIDENCE_Z < 0:
+                raise ValueError(
+                    'ANALYSIS.FREQUENCY.PREDICTIVITY.CONFIDENCE_Z must be non-negative'
+                )
+            if predictivity_cfg.PAIRED_BOOTSTRAP_SAMPLES < 0:
+                raise ValueError(
+                    'ANALYSIS.FREQUENCY.PREDICTIVITY.PAIRED_BOOTSTRAP_SAMPLES '
+                    'must be non-negative'
+                )
+            if predictivity_cfg.COORDINATE_ASCENT_MAX_PASSES <= 0:
+                raise ValueError(
+                    'ANALYSIS.FREQUENCY.PREDICTIVITY.COORDINATE_ASCENT_MAX_PASSES '
+                    'must be positive'
                 )
             self.frequency_band_stop = FourierBandStop(
                 frequency_cfg.BAND_NAMES,
@@ -421,12 +438,26 @@ class Runner:
             support_records[class_id]['bands'][band_name]['std']
             for class_id in range(num_classes)
         ], dtype=torch.float32)
+        support_sample_counts = torch.tensor([
+            support_records[class_id]['num_samples']
+            for class_id in range(num_classes)
+        ], dtype=torch.float32)
+        support_sem = support_std / support_sample_counts.sqrt()
         support_snr = support_mean / (
             support_std + predictivity_cfg.RELIABILITY_EPS
         )
-        predicted_hard_gate = (support_mean >= 0).float()
+        hard_gate_threshold = float(predictivity_cfg.HARD_GATE_THRESHOLD)
+        predicted_hard_gate = (support_mean >= hard_gate_threshold).float()
+        support_upper_confidence = (
+            support_mean
+            + float(predictivity_cfg.CONFIDENCE_Z) * support_sem
+        )
+        predicted_confident_hard_gate = (
+            support_upper_confidence >= hard_gate_threshold
+        ).float()
         predicted_soft_gate = torch.sigmoid(
-            support_mean / predictivity_cfg.SOFT_GATE_TEMPERATURE
+            (support_mean - hard_gate_threshold)
+            / predictivity_cfg.SOFT_GATE_TEMPERATURE
         )
 
         test_loader = self.data_manager.get_dataloader(
@@ -486,23 +517,97 @@ class Runner:
             ).float().mean()
 
         accuracy_delta = full_class_accuracy - removed_class_accuracy
-        oracle_margin_gate = (test_mean >= 0).float()
-        oracle_accuracy_gate = (accuracy_delta >= 0).float()
+        test_label_margin_gate = (test_mean >= 0).float()
+        test_label_accuracy_gate = (accuracy_delta >= 0).float()
 
         def gated_logits(gate):
             gate = gate.view(1, -1)
             return gate * full_logits + (1.0 - gate) * removed_logits
 
-        def accuracy(logits):
-            return float((logits.argmax(dim=1) == labels).float().mean())
+        def predictions_and_accuracy(logits):
+            predictions = logits.argmax(dim=1)
+            accuracy_value = float((predictions == labels).float().mean())
+            return predictions, accuracy_value
 
-        full_accuracy = accuracy(full_logits)
-        removed_accuracy = accuracy(removed_logits)
-        equal_mix_accuracy = accuracy(0.5 * (full_logits + removed_logits))
-        predicted_hard_accuracy = accuracy(gated_logits(predicted_hard_gate))
-        predicted_soft_accuracy = accuracy(gated_logits(predicted_soft_gate))
-        oracle_margin_accuracy = accuracy(gated_logits(oracle_margin_gate))
-        oracle_accuracy = accuracy(gated_logits(oracle_accuracy_gate))
+        full_predictions, full_accuracy = predictions_and_accuracy(full_logits)
+        removed_predictions, removed_accuracy = predictions_and_accuracy(removed_logits)
+        equal_mix_predictions, equal_mix_accuracy = predictions_and_accuracy(
+            0.5 * (full_logits + removed_logits)
+        )
+        predicted_hard_predictions, predicted_hard_accuracy = predictions_and_accuracy(
+            gated_logits(predicted_hard_gate)
+        )
+        (
+            predicted_confident_hard_predictions,
+            predicted_confident_hard_accuracy,
+        ) = predictions_and_accuracy(gated_logits(predicted_confident_hard_gate))
+        predicted_soft_predictions, predicted_soft_accuracy = predictions_and_accuracy(
+            gated_logits(predicted_soft_gate)
+        )
+        (
+            test_label_margin_predictions,
+            test_label_margin_accuracy,
+        ) = predictions_and_accuracy(gated_logits(test_label_margin_gate))
+        (
+            test_label_accuracy_predictions,
+            test_label_accuracy_accuracy,
+        ) = predictions_and_accuracy(gated_logits(test_label_accuracy_gate))
+
+        coordinate_starts = {
+            'full': torch.ones(num_classes, dtype=torch.float32),
+            'support_hard': predicted_hard_gate,
+            'test_label_accuracy': test_label_accuracy_gate,
+        }
+        coordinate_results = {
+            name: coordinate_ascent_class_gate(
+                full_logits,
+                removed_logits,
+                labels,
+                initial_gate=gate,
+                max_passes=int(predictivity_cfg.COORDINATE_ASCENT_MAX_PASSES),
+            )
+            for name, gate in coordinate_starts.items()
+        }
+        coordinate_start_name, coordinate_result = max(
+            coordinate_results.items(), key=lambda item: item[1]['correct']
+        )
+        test_optimized_coordinate_gate = coordinate_result['gate']
+        test_optimized_coordinate_predictions = coordinate_result['predictions']
+        test_optimized_coordinate_accuracy = coordinate_result['accuracy']
+
+        threshold_sweep = []
+        for threshold in predictivity_cfg.THRESHOLD_SWEEP:
+            threshold_gate = (support_mean >= float(threshold)).float()
+            _, threshold_accuracy = predictions_and_accuracy(
+                gated_logits(threshold_gate)
+            )
+            threshold_sweep.append({
+                'threshold': float(threshold),
+                'classes_using_removed': int((threshold_gate < 0.5).sum()),
+                'accuracy': threshold_accuracy,
+            })
+
+        bootstrap_samples = int(predictivity_cfg.PAIRED_BOOTSTRAP_SAMPLES)
+        bootstrap_seed = int(self.cfg.SEED) * 1000 + int(task_id)
+        full_correct = full_predictions == labels
+        comparison_predictions = {
+            'equal_mix': equal_mix_predictions,
+            'predicted_hard_gate': predicted_hard_predictions,
+            'predicted_confident_hard_gate': predicted_confident_hard_predictions,
+            'predicted_soft_gate': predicted_soft_predictions,
+            'test_label_margin_gate': test_label_margin_predictions,
+            'test_label_accuracy_gate': test_label_accuracy_predictions,
+            'test_optimized_coordinate_gate': test_optimized_coordinate_predictions,
+        }
+        paired_accuracy_vs_full = {
+            name: paired_accuracy_statistics(
+                full_correct,
+                predictions == labels,
+                bootstrap_samples=bootstrap_samples,
+                seed=bootstrap_seed,
+            )
+            for name, predictions in comparison_predictions.items()
+        }
 
         predicted_harmful = support_mean < 0
 
@@ -532,15 +637,22 @@ class Runner:
                 'num_test_samples': int(class_sample_counts[class_id]),
                 'support_contribution_mean': float(support_mean[class_id]),
                 'support_contribution_std': float(support_std[class_id]),
+                'support_contribution_sem': float(support_sem[class_id]),
                 'support_reliability_snr': float(support_snr[class_id]),
                 'test_contribution_mean': float(test_mean[class_id]),
                 'full_accuracy': float(full_class_accuracy[class_id]),
                 'high_removed_accuracy': float(removed_class_accuracy[class_id]),
                 'accuracy_delta': float(accuracy_delta[class_id]),
                 'predicted_hard_use_full': int(predicted_hard_gate[class_id]),
+                'predicted_confident_hard_use_full': int(
+                    predicted_confident_hard_gate[class_id]
+                ),
                 'predicted_soft_use_full_weight': float(predicted_soft_gate[class_id]),
-                'oracle_margin_use_full': int(oracle_margin_gate[class_id]),
-                'oracle_accuracy_use_full': int(oracle_accuracy_gate[class_id]),
+                'test_label_margin_use_full': int(test_label_margin_gate[class_id]),
+                'test_label_accuracy_use_full': int(test_label_accuracy_gate[class_id]),
+                'test_optimized_coordinate_use_full': int(
+                    test_optimized_coordinate_gate[class_id]
+                ),
             })
 
         summary = {
@@ -553,9 +665,37 @@ class Runner:
                 'band_removed': removed_accuracy,
                 'equal_mix': equal_mix_accuracy,
                 'predicted_hard_gate': predicted_hard_accuracy,
+                'predicted_confident_hard_gate': predicted_confident_hard_accuracy,
                 'predicted_soft_gate': predicted_soft_accuracy,
-                'oracle_test_margin_gate': oracle_margin_accuracy,
-                'oracle_test_accuracy_gate': oracle_accuracy,
+                'test_label_margin_gate': test_label_margin_accuracy,
+                'test_label_accuracy_gate': test_label_accuracy_accuracy,
+                'test_optimized_coordinate_gate': test_optimized_coordinate_accuracy,
+            },
+            'paired_accuracy_vs_full': paired_accuracy_vs_full,
+            'test_threshold_sweep': threshold_sweep,
+            'test_optimized_coordinate_search': {
+                'selected_start': coordinate_start_name,
+                'test_leakage': True,
+                'not_global_optimum': True,
+                'max_passes': int(predictivity_cfg.COORDINATE_ASCENT_MAX_PASSES),
+                'selected_result': {
+                    'classes_using_removed': int(
+                        (test_optimized_coordinate_gate < 0.5).sum()
+                    ),
+                    'accepted_flips': int(coordinate_result['accepted_flips']),
+                    'passes': int(coordinate_result['passes']),
+                    'correct_trajectory': coordinate_result['correct_trajectory'],
+                },
+                'starts': {
+                    name: {
+                        'accuracy': result['accuracy'],
+                        'correct': result['correct'],
+                        'accepted_flips': result['accepted_flips'],
+                        'passes': result['passes'],
+                        'correct_trajectory': result['correct_trajectory'],
+                    }
+                    for name, result in coordinate_results.items()
+                },
             },
             'support_to_test_correlation': {
                 'mean_vs_test_margin_pearson': pearson_correlation(
@@ -586,12 +726,27 @@ class Runner:
             competitor_scope='classes accumulated through task {}'.format(task_id)
         )
         metadata['predictivity'] = {
+            'evaluation_version': 2,
             'strict_session_time': frequency_cfg.COMPETITOR_SCOPE == 'accumulated',
             'soft_gate_temperature': float(
                 predictivity_cfg.SOFT_GATE_TEMPERATURE
             ),
+            'hard_gate_threshold': hard_gate_threshold,
+            'confidence_z': float(predictivity_cfg.CONFIDENCE_Z),
             'reliability_eps': float(predictivity_cfg.RELIABILITY_EPS),
-            'gate_interpretation': '1 uses full image; 0 uses band-removed image',
+            'paired_bootstrap_samples': bootstrap_samples,
+            'gate_interpretation': (
+                'Each gate controls a candidate-class logit column: 1 uses the '
+                'full-image logit and 0 uses the band-removed-image logit.'
+            ),
+            'test_label_gate_warning': (
+                'Test-label gates are descriptive leaked references, not oracle '
+                'upper bounds on global classifier accuracy.'
+            ),
+            'test_optimized_coordinate_warning': (
+                'Coordinate ascent uses test labels and is a local diagnostic '
+                'ceiling, not a deployable method or guaranteed global optimum.'
+            ),
         }
         stem = 'session_{:02d}_frequency_predictivity'.format(task_id)
         json_path, csv_path = write_predictivity_report(
@@ -601,9 +756,57 @@ class Runner:
             summary,
             metadata,
         )
+        sample_csv_path = None
+        if predictivity_cfg.SAVE_SAMPLE_PREDICTIONS:
+            sample_records = []
+            for sample_index in range(labels.numel()):
+                sample_records.append({
+                    'sample_index': sample_index,
+                    'label': int(labels[sample_index]),
+                    'full_prediction': int(full_predictions[sample_index]),
+                    'band_removed_prediction': int(removed_predictions[sample_index]),
+                    'equal_mix_prediction': int(equal_mix_predictions[sample_index]),
+                    'predicted_hard_prediction': int(
+                        predicted_hard_predictions[sample_index]
+                    ),
+                    'predicted_confident_hard_prediction': int(
+                        predicted_confident_hard_predictions[sample_index]
+                    ),
+                    'predicted_soft_prediction': int(
+                        predicted_soft_predictions[sample_index]
+                    ),
+                    'test_label_margin_prediction': int(
+                        test_label_margin_predictions[sample_index]
+                    ),
+                    'test_label_accuracy_prediction': int(
+                        test_label_accuracy_predictions[sample_index]
+                    ),
+                    'test_optimized_coordinate_prediction': int(
+                        test_optimized_coordinate_predictions[sample_index]
+                    ),
+                    'full_correct': int(full_correct[sample_index]),
+                    'predicted_hard_correct': int(
+                        predicted_hard_predictions[sample_index] == labels[sample_index]
+                    ),
+                    'predicted_confident_hard_correct': int(
+                        predicted_confident_hard_predictions[sample_index]
+                        == labels[sample_index]
+                    ),
+                    'test_optimized_coordinate_correct': int(
+                        test_optimized_coordinate_predictions[sample_index]
+                        == labels[sample_index]
+                    ),
+                })
+            sample_csv_path = write_sample_predictions(
+                self.frequency_output_dir, stem, sample_records
+            )
         self.frequency_predictivity_reports.append(summary)
         print('Frequency predictivity summary: {}'.format(summary))
-        print('Saved frequency predictivity report: {}, {}'.format(json_path, csv_path))
+        print(
+            'Saved frequency predictivity report: {}, {}, {}'.format(
+                json_path, csv_path, sample_csv_path
+            )
+        )
     
 
     @torch.no_grad()

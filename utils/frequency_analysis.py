@@ -467,18 +467,234 @@ def write_predictivity_report(output_dir, stem, class_records, summary, metadata
         "num_test_samples",
         "support_contribution_mean",
         "support_contribution_std",
+        "support_contribution_sem",
         "support_reliability_snr",
         "test_contribution_mean",
         "full_accuracy",
         "high_removed_accuracy",
         "accuracy_delta",
         "predicted_hard_use_full",
+        "predicted_confident_hard_use_full",
         "predicted_soft_use_full_weight",
-        "oracle_margin_use_full",
-        "oracle_accuracy_use_full",
+        "test_label_margin_use_full",
+        "test_label_accuracy_use_full",
+        "test_optimized_coordinate_use_full",
     ]
     with open(csv_path, "w", encoding="utf-8", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(class_records)
     return json_path, csv_path
+
+
+def write_sample_predictions(output_dir, stem, sample_records):
+    """Write per-test-sample predictions used by paired significance tests."""
+    os.makedirs(output_dir, exist_ok=True)
+    csv_path = os.path.join(output_dir, stem + "_samples.csv")
+    fieldnames = [
+        "sample_index",
+        "label",
+        "full_prediction",
+        "band_removed_prediction",
+        "equal_mix_prediction",
+        "predicted_hard_prediction",
+        "predicted_confident_hard_prediction",
+        "predicted_soft_prediction",
+        "test_label_margin_prediction",
+        "test_label_accuracy_prediction",
+        "test_optimized_coordinate_prediction",
+        "full_correct",
+        "predicted_hard_correct",
+        "predicted_confident_hard_correct",
+        "test_optimized_coordinate_correct",
+    ]
+    with open(csv_path, "w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(sample_records)
+    return csv_path
+
+
+def exact_mcnemar_pvalue(reference_only_correct, candidate_only_correct):
+    """Two-sided exact McNemar p-value without requiring SciPy."""
+    reference_only_correct = int(reference_only_correct)
+    candidate_only_correct = int(candidate_only_correct)
+    discordant = reference_only_correct + candidate_only_correct
+    if discordant == 0:
+        return 1.0
+
+    tail = min(reference_only_correct, candidate_only_correct)
+    log_probabilities = [
+        math.lgamma(discordant + 1)
+        - math.lgamma(k + 1)
+        - math.lgamma(discordant - k + 1)
+        - discordant * math.log(2.0)
+        for k in range(tail + 1)
+    ]
+    max_log_probability = max(log_probabilities)
+    log_cdf = max_log_probability + math.log(sum(
+        math.exp(value - max_log_probability) for value in log_probabilities
+    ))
+    log_two_sided = math.log(2.0) + log_cdf
+    return 1.0 if log_two_sided >= 0.0 else math.exp(log_two_sided)
+
+
+def paired_accuracy_statistics(
+    reference_correct,
+    candidate_correct,
+    bootstrap_samples=2000,
+    confidence_level=0.95,
+    seed=0,
+):
+    """Summarize a paired accuracy change with McNemar and bootstrap CI."""
+    reference_correct = torch.as_tensor(reference_correct).bool().flatten().cpu()
+    candidate_correct = torch.as_tensor(candidate_correct).bool().flatten().cpu()
+    if reference_correct.shape != candidate_correct.shape:
+        raise ValueError("paired correctness arrays must have matching shapes")
+    if reference_correct.numel() == 0:
+        raise ValueError("paired correctness arrays must be non-empty")
+    if bootstrap_samples < 0:
+        raise ValueError("bootstrap_samples must be non-negative")
+    if not 0.0 < confidence_level < 1.0:
+        raise ValueError("confidence_level must lie between 0 and 1")
+
+    both_correct = reference_correct & candidate_correct
+    reference_only = reference_correct & (~candidate_correct)
+    candidate_only = (~reference_correct) & candidate_correct
+    both_wrong = (~reference_correct) & (~candidate_correct)
+    difference = candidate_correct.float() - reference_correct.float()
+
+    confidence_interval = None
+    if bootstrap_samples > 0:
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(int(seed))
+        estimates = []
+        remaining = int(bootstrap_samples)
+        batch_size = min(256, remaining)
+        while remaining > 0:
+            current_batch_size = min(batch_size, remaining)
+            indices = torch.randint(
+                0,
+                difference.numel(),
+                (current_batch_size, difference.numel()),
+                generator=generator,
+            )
+            estimates.append(difference[indices].mean(dim=1))
+            remaining -= current_batch_size
+        estimates = torch.cat(estimates)
+        alpha = (1.0 - confidence_level) / 2.0
+        bounds = torch.quantile(
+            estimates,
+            torch.tensor([alpha, 1.0 - alpha], dtype=estimates.dtype),
+        )
+        confidence_interval = [float(bounds[0]), float(bounds[1])]
+
+    reference_only_count = int(reference_only.sum())
+    candidate_only_count = int(candidate_only.sum())
+    return {
+        "num_samples": int(reference_correct.numel()),
+        "both_correct": int(both_correct.sum()),
+        "reference_only_correct": reference_only_count,
+        "candidate_only_correct": candidate_only_count,
+        "both_wrong": int(both_wrong.sum()),
+        "net_correct": candidate_only_count - reference_only_count,
+        "accuracy_delta": float(difference.mean()),
+        "bootstrap_confidence_level": float(confidence_level),
+        "bootstrap_accuracy_delta_ci": confidence_interval,
+        "bootstrap_samples": int(bootstrap_samples),
+        "mcnemar_exact_p": exact_mcnemar_pvalue(
+            reference_only_count, candidate_only_count
+        ),
+    }
+
+
+def coordinate_ascent_class_gate(
+    full_logits,
+    removed_logits,
+    labels,
+    initial_gate=None,
+    max_passes=3,
+):
+    """Test-label coordinate ascent over class-logit source gates.
+
+    This is intentionally a test-leakage diagnostic reference, not a deployable
+    gate and not a guaranteed global optimum.
+    """
+    full_logits = torch.as_tensor(full_logits).float().cpu()
+    removed_logits = torch.as_tensor(removed_logits).float().cpu()
+    labels = torch.as_tensor(labels).long().flatten().cpu()
+    if full_logits.shape != removed_logits.shape:
+        raise ValueError("full_logits and removed_logits must have matching shapes")
+    if full_logits.ndim != 2 or full_logits.shape[0] != labels.numel():
+        raise ValueError("logits must have shape [num_samples, num_classes]")
+    if full_logits.shape[1] < 2:
+        raise ValueError("coordinate ascent requires at least two classes")
+    if max_passes <= 0:
+        raise ValueError("max_passes must be positive")
+
+    num_classes = full_logits.shape[1]
+    if initial_gate is None:
+        gate = torch.ones(num_classes, dtype=torch.float32)
+    else:
+        gate = torch.as_tensor(initial_gate).float().flatten().cpu().clone()
+        if gate.numel() != num_classes:
+            raise ValueError("initial_gate must contain one value per class")
+        gate = (gate >= 0.5).float()
+
+    current_logits = (
+        gate.view(1, -1) * full_logits
+        + (1.0 - gate.view(1, -1)) * removed_logits
+    )
+    current_correct = int((current_logits.argmax(dim=1) == labels).sum())
+    trajectory = [current_correct]
+    accepted_flips = 0
+
+    for _ in range(int(max_passes)):
+        flips_this_pass = 0
+        top_values, top_indices = current_logits.topk(2, dim=1)
+        for class_id in range(num_classes):
+            alternative_column = (
+                removed_logits[:, class_id]
+                if gate[class_id] >= 0.5
+                else full_logits[:, class_id]
+            )
+            top_is_class = top_indices[:, 0] == class_id
+            best_other_value = torch.where(
+                top_is_class, top_values[:, 1], top_values[:, 0]
+            )
+            best_other_index = torch.where(
+                top_is_class, top_indices[:, 1], top_indices[:, 0]
+            )
+            choose_class = alternative_column > best_other_value
+            tied = alternative_column == best_other_value
+            choose_class = choose_class | (tied & (class_id < best_other_index))
+            candidate_predictions = torch.where(
+                choose_class,
+                torch.full_like(best_other_index, class_id),
+                best_other_index,
+            )
+            candidate_correct = int((candidate_predictions == labels).sum())
+            if candidate_correct > current_correct:
+                current_logits[:, class_id] = alternative_column
+                gate[class_id] = 1.0 - gate[class_id]
+                current_correct = candidate_correct
+                flips_this_pass += 1
+                accepted_flips += 1
+                top_values, top_indices = current_logits.topk(2, dim=1)
+
+        trajectory.append(current_correct)
+        if flips_this_pass == 0:
+            break
+
+    predictions = current_logits.argmax(dim=1)
+    final_correct = int((predictions == labels).sum())
+    trajectory[-1] = final_correct
+    return {
+        "gate": gate,
+        "predictions": predictions,
+        "accuracy": float(final_correct) / float(labels.numel()),
+        "correct": final_correct,
+        "accepted_flips": accepted_flips,
+        "passes": len(trajectory) - 1,
+        "correct_trajectory": trajectory,
+    }
