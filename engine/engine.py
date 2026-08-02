@@ -8,6 +8,14 @@ from utils.evaluator import AccuracyEvaluator
 from models.bimc import BiMC
 import numpy as np
 import time
+import os
+from utils.frequency_analysis import (
+    FourierBandStop,
+    FrequencyContributionAccumulator,
+    semantic_margins,
+    summarize_frequency_records,
+    write_frequency_records,
+)
 
 
 class Runner:
@@ -32,6 +40,22 @@ class Runner:
         self.acc_list = []
         self.task_acc_list = []
         self.evaluator = AccuracyEvaluator(self.data_manager.class_index_in_task)
+
+        frequency_cfg = cfg.ANALYSIS.FREQUENCY
+        self.frequency_analysis_enabled = frequency_cfg.ENABLED
+        self.frequency_analysis_only = frequency_cfg.ANALYSIS_ONLY
+        self.frequency_records = []
+        self.frequency_text_features = None
+        if self.frequency_analysis_enabled:
+            if frequency_cfg.SAMPLES_PER_CLASS <= 0:
+                raise ValueError('ANALYSIS.FREQUENCY.SAMPLES_PER_CLASS must be positive')
+            self.frequency_band_stop = FourierBandStop(
+                frequency_cfg.BAND_NAMES, frequency_cfg.BAND_EDGES
+            )
+            self.frequency_output_dir = os.path.join(
+                frequency_cfg.OUTPUT_DIR,
+                '{}_seed{}'.format(cfg.DATASET.NAME.lower(), cfg.SEED),
+            )
 
 
     def merge_dicts(self, dict_list):
@@ -81,6 +105,12 @@ class Runner:
             self.model.eval()
 
             current_class_name = np.array(self.data_manager.class_names)[self.data_manager.class_index_in_task[i]]
+
+            if self.frequency_analysis_enabled:
+                self.analyze_frequency_contribution(i)
+                if self.frequency_analysis_only:
+                    continue
+
             loader = self.data_manager.get_dataloader(i, source='train', mode='test', accumulate_past=False)            
 
 
@@ -102,10 +132,141 @@ class Runner:
             self.acc_list.append(round(acc["mean_acc"], 3))
             self.task_acc_list.append(acc['task_acc'])
 
-        print(f'Final acc:{self.acc_list}')
-        print('Task-wise acc:')
-        for i, task_acc in enumerate(self.task_acc_list):
-            print(f'task {i:2d}, acc:{task_acc}')
+        if self.frequency_analysis_enabled:
+            self.write_combined_frequency_analysis()
+
+        if not self.frequency_analysis_only:
+            print(f'Final acc:{self.acc_list}')
+            print('Task-wise acc:')
+            for i, task_acc in enumerate(self.task_acc_list):
+                print(f'task {i:2d}, acc:{task_acc}')
+        else:
+            print('Frequency analysis complete. Results: {}'.format(self.frequency_output_dir))
+
+
+    @torch.no_grad()
+    def analyze_frequency_contribution(self, task_id):
+        frequency_cfg = self.cfg.ANALYSIS.FREQUENCY
+        model = self.model.module if self.is_distributed else self.model
+
+        if frequency_cfg.COMPETITOR_SCOPE == 'all':
+            candidate_class_names = np.array(self.data_manager.class_names)
+            competitor_scope = 'all dataset classes (offline diagnostic only)'
+        elif frequency_cfg.COMPETITOR_SCOPE == 'accumulated':
+            accumulated_class_ids = np.concatenate(
+                self.data_manager.class_index_in_task[:task_id + 1]
+            )
+            candidate_class_names = np.array(self.data_manager.class_names)[accumulated_class_ids]
+            competitor_scope = 'classes accumulated through task {}'.format(task_id)
+        else:
+            raise ValueError(
+                "ANALYSIS.FREQUENCY.COMPETITOR_SCOPE must be 'all' or 'accumulated'"
+            )
+        if frequency_cfg.COMPETITOR_SCOPE == 'all' and self.frequency_text_features is not None:
+            text_features = self.frequency_text_features
+        else:
+            text_features, _ = model.inference_text_feature(
+                candidate_class_names, self.data_manager.template, cls_begin_index=0
+            )
+            if frequency_cfg.COMPETITOR_SCOPE == 'all':
+                self.frequency_text_features = text_features
+
+        loader = self.data_manager.get_dataloader(
+            task_id,
+            source='train',
+            mode='test',
+            accumulate_past=False,
+            shot_override=frequency_cfg.SAMPLES_PER_CLASS,
+        )
+        accumulator = FrequencyContributionAccumulator(
+            frequency_cfg.BAND_NAMES,
+            weight_temperature=frequency_cfg.WEIGHT_TEMPERATURE,
+        )
+
+        print('Analyzing frequency contribution for task {} ...'.format(task_id))
+        for batch in tqdm(loader):
+            images, labels = self.parse_batch(batch)
+            full_features = F.normalize(model.extract_img_feature(images), dim=-1)
+            full_margins = semantic_margins(full_features, text_features, labels)
+
+            contributions = {}
+            for band_index, band_name in enumerate(frequency_cfg.BAND_NAMES):
+                counterfactual_images = self.frequency_band_stop.remove(images, band_index)
+                counterfactual_features = F.normalize(
+                    model.extract_img_feature(counterfactual_images), dim=-1
+                )
+                counterfactual_margins = semantic_margins(
+                    counterfactual_features, text_features, labels
+                )
+                contributions[band_name] = full_margins - counterfactual_margins
+            accumulator.update(labels, contributions)
+
+        session_records = accumulator.records(
+            self.data_manager.class_names, task_id=task_id
+        )
+        self.frequency_records.extend(session_records)
+        session_summary = summarize_frequency_records(
+            session_records, frequency_cfg.BAND_NAMES
+        )
+        metadata = self._frequency_metadata(competitor_scope=competitor_scope)
+        json_path, csv_path = write_frequency_records(
+            self.frequency_output_dir,
+            'session_{:02d}_frequency_contribution'.format(task_id),
+            session_records,
+            session_summary,
+            metadata,
+        )
+        print('Frequency summary for task {}: {}'.format(task_id, session_summary))
+        print('Saved frequency records: {}, {}'.format(json_path, csv_path))
+
+
+    def _frequency_metadata(self, competitor_scope):
+        frequency_cfg = self.cfg.ANALYSIS.FREQUENCY
+        return {
+            'dataset': self.cfg.DATASET.NAME,
+            'seed': int(self.cfg.SEED),
+            'method': 'Fourier radial band-stop semantic-margin contribution',
+            'band_names': list(frequency_cfg.BAND_NAMES),
+            'band_edges': [float(value) for value in frequency_cfg.BAND_EDGES],
+            'samples_per_class': int(frequency_cfg.SAMPLES_PER_CLASS),
+            'weight_temperature': float(frequency_cfg.WEIGHT_TEMPERATURE),
+            'competitor_scope': competitor_scope,
+            'configured_competitor_scope': frequency_cfg.COMPETITOR_SCOPE,
+            'dc_component_preserved': True,
+        }
+
+
+    def write_combined_frequency_analysis(self):
+        frequency_cfg = self.cfg.ANALYSIS.FREQUENCY
+        summary = summarize_frequency_records(
+            self.frequency_records, frequency_cfg.BAND_NAMES
+        )
+        summary['by_session_type'] = {
+            session_type: summarize_frequency_records(
+                [
+                    record for record in self.frequency_records
+                    if record['session_type'] == session_type
+                ],
+                frequency_cfg.BAND_NAMES,
+            )
+            for session_type in ('base', 'incremental')
+        }
+        metadata = self._frequency_metadata(
+            competitor_scope=(
+                'all dataset classes (offline diagnostic only)'
+                if frequency_cfg.COMPETITOR_SCOPE == 'all'
+                else 'session-specific accumulated classes'
+            )
+        )
+        json_path, csv_path = write_frequency_records(
+            self.frequency_output_dir,
+            'all_classes_frequency_contribution',
+            self.frequency_records,
+            summary,
+            metadata,
+        )
+        print('Combined frequency summary: {}'.format(summary))
+        print('Saved combined frequency records: {}, {}'.format(json_path, csv_path))
     
 
     @torch.no_grad()

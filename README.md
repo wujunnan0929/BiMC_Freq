@@ -46,6 +46,28 @@ python main.py --data_cfg ./configs/datasets/cub200.yaml --train_cfg ./configs/t
 python main.py --data_cfg ./configs/datasets/cub200.yaml --train_cfg ./configs/trainers/bimc_ensemble.yaml
 ~~~
 
+## Frequency contribution diagnostic
+
+Run the training-free frequency counterfactual diagnostic with:
+
+~~~BASH
+python main.py --data_cfg ./configs/datasets/cifar100.yaml --train_cfg ./configs/trainers/bimc_freq_analysis.yaml
+~~~
+
+The diagnostic samples five deterministic, center-cropped training images per
+class, removes low-, mid-, and high-frequency radial Fourier bands in turn, and
+measures the resulting drop in CLIP's correct-class semantic margin. It does not
+change or train the BiMC classifier. Per-session and all-class JSON/CSV reports
+are written under `outputs/frequency_analysis/<dataset>_seed<seed>/`.
+
+In `all_classes_frequency_contribution.json`, inspect
+`class_effect_eta_squared`, the dominant-band distribution, and
+`mean_pairwise_frequency_weight_l1`. Larger values indicate that the measured
+frequency contribution varies more strongly between classes. The default
+`COMPETITOR_SCOPE: all` uses all dataset class names so results are comparable
+between sessions; this is an offline analysis setting, not a deployable FSCIL
+protocol. Set it to `accumulated` for a strict session-time diagnostic.
+
 ## Acknowledgment
 
 In this repository, we build our code based on the following excellent open-source projects. We sincerely thank all the authors for sharing their great work:

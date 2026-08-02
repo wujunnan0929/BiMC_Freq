@@ -70,6 +70,18 @@ def extend_cfg(cfg):
     cfg.TRAINER.BiMC.GAMMA_INC = -1.0
     cfg.TRAINER.BiMC.USING_ENSEMBLE = False
 
+    # Optional, training-free frequency contribution diagnostic.
+    cfg.ANALYSIS = CN()
+    cfg.ANALYSIS.FREQUENCY = CN()
+    cfg.ANALYSIS.FREQUENCY.ENABLED = False
+    cfg.ANALYSIS.FREQUENCY.ANALYSIS_ONLY = False
+    cfg.ANALYSIS.FREQUENCY.OUTPUT_DIR = './outputs/frequency_analysis'
+    cfg.ANALYSIS.FREQUENCY.BAND_NAMES = ['low', 'mid', 'high']
+    cfg.ANALYSIS.FREQUENCY.BAND_EDGES = [0.0, 0.15, 0.35, 1.0]
+    cfg.ANALYSIS.FREQUENCY.SAMPLES_PER_CLASS = 5
+    cfg.ANALYSIS.FREQUENCY.WEIGHT_TEMPERATURE = 0.05
+    cfg.ANALYSIS.FREQUENCY.COMPETITOR_SCOPE = 'all'
+
 
 
     

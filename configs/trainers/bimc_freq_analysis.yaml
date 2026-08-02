@@ -1,0 +1,42 @@
+SEED: 1
+
+DEVICE:
+  DEVICE_NAME: "cuda"
+  GPU_ID: "0;"
+
+DATALOADER:
+  TRAIN:
+    BATCH_SIZE_BASE: 64
+    BATCH_SIZE_INC: 64
+  TEST:
+    BATCH_SIZE: 100
+  NUM_WORKERS: 4
+
+MODEL:
+  BACKBONE:
+    NAME: "ViT-B/16"
+
+TRAINER:
+  BiMC:
+    PREC: "fp16"
+    VISION_CALIBRATION: True
+    LAMBDA_I: 0.1
+    TAU: 16
+    TEXT_CALIBRATION: True
+    LAMBDA_T: 0.5
+    GAMMA_BASE: 1.0
+    GAMMA_INC: 5.0
+    USING_ENSEMBLE: False
+
+ANALYSIS:
+  FREQUENCY:
+    ENABLED: True
+    ANALYSIS_ONLY: True
+    OUTPUT_DIR: "./outputs/frequency_analysis"
+    BAND_NAMES: ["low", "mid", "high"]
+    BAND_EDGES: [0.0, 0.15, 0.35, 1.0]
+    SAMPLES_PER_CLASS: 5
+    WEIGHT_TEMPERATURE: 0.05
+    # "all" makes class contributions comparable across sessions. It is an
+    # offline diagnostic and does not represent a deployable FSCIL protocol.
+    COMPETITOR_SCOPE: "all"

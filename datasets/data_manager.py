@@ -53,7 +53,7 @@ class DatasetManager:
         self.num_total_classes = len(self.class_names)
     
 
-    def get_dataset(self, task_id, source, mode=None, accumulated_past=False):
+    def get_dataset(self, task_id, source, mode=None, accumulated_past=False, shot_override=None):
         '''
         source: which part of dataset
         mode: which data transform is used
@@ -111,19 +111,21 @@ class DatasetManager:
             return indices
         
         class_to_task_id = find_sublist_indices(self.class_index_in_task, class_idx)
-        num_shot = self.num_base_shot if task_id == 0 else self.num_inc_shot
+        num_shot = shot_override
+        if num_shot is None:
+            num_shot = self.num_base_shot if task_id == 0 else self.num_inc_shot
         data, targets = self._select_data_from_class_index(x, y, class_idx, num_shot, source)
         task_dataset = TaskDataset(data, targets, transform, class_to_task_id, self.class_names)
         return task_dataset
     
 
     
-    def get_dataloader(self, task_id, source, mode=None, accumulate_past=False):
+    def get_dataloader(self, task_id, source, mode=None, accumulate_past=False, shot_override=None):
         assert source in ['train', 'test'], f'data source must be in ["train", "test"], got {source}'
         # the default mode is same as source
         if mode == None:
             mode = source
-        dataset = self.get_dataset(task_id, source, mode, accumulate_past)
+        dataset = self.get_dataset(task_id, source, mode, accumulate_past, shot_override)
         if source == 'train':
             if task_id == 0:
                 batchsize = self.train_batchsize_base
