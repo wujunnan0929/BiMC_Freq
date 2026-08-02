@@ -14,10 +14,13 @@ from utils.frequency_analysis import (
     FrequencyContributionAccumulator,
     band_energy_fractions,
     equal_energy_band_edges,
+    pearson_correlation,
     semantic_margins,
+    spearman_correlation,
     summed_power_spectrum,
     summarize_frequency_records,
     write_frequency_records,
+    write_predictivity_report,
 )
 
 
@@ -50,6 +53,7 @@ class Runner:
         self.frequency_records = []
         self.frequency_text_features = None
         self.frequency_band_energy_fractions = None
+        self.frequency_predictivity_reports = []
         if self.frequency_analysis_enabled:
             if frequency_cfg.SAMPLES_PER_CLASS <= 0:
                 raise ValueError('ANALYSIS.FREQUENCY.SAMPLES_PER_CLASS must be positive')
@@ -60,6 +64,23 @@ class Runner:
             if frequency_cfg.ENERGY_SAMPLES_PER_CLASS <= 0:
                 raise ValueError(
                     'ANALYSIS.FREQUENCY.ENERGY_SAMPLES_PER_CLASS must be positive'
+                )
+            predictivity_cfg = frequency_cfg.PREDICTIVITY
+            if predictivity_cfg.EVAL_SCOPE not in ('final', 'all'):
+                raise ValueError(
+                    "ANALYSIS.FREQUENCY.PREDICTIVITY.EVAL_SCOPE must be 'final' or 'all'"
+                )
+            if predictivity_cfg.BAND not in frequency_cfg.BAND_NAMES:
+                raise ValueError(
+                    'ANALYSIS.FREQUENCY.PREDICTIVITY.BAND must name a configured band'
+                )
+            if predictivity_cfg.SOFT_GATE_TEMPERATURE <= 0:
+                raise ValueError(
+                    'ANALYSIS.FREQUENCY.PREDICTIVITY.SOFT_GATE_TEMPERATURE must be positive'
+                )
+            if predictivity_cfg.RELIABILITY_EPS <= 0:
+                raise ValueError(
+                    'ANALYSIS.FREQUENCY.PREDICTIVITY.RELIABILITY_EPS must be positive'
                 )
             self.frequency_band_stop = FourierBandStop(
                 frequency_cfg.BAND_NAMES,
@@ -126,6 +147,16 @@ class Runner:
 
             if self.frequency_analysis_enabled:
                 self.analyze_frequency_contribution(i)
+                predictivity_cfg = self.cfg.ANALYSIS.FREQUENCY.PREDICTIVITY
+                should_evaluate_predictivity = (
+                    predictivity_cfg.ENABLED
+                    and (
+                        predictivity_cfg.EVAL_SCOPE == 'all'
+                        or i == self.data_manager.num_tasks - 1
+                    )
+                )
+                if should_evaluate_predictivity:
+                    self.evaluate_frequency_predictivity(i)
                 if self.frequency_analysis_only:
                     continue
 
@@ -349,6 +380,230 @@ class Runner:
         )
         print('Combined frequency summary: {}'.format(summary))
         print('Saved combined frequency records: {}, {}'.format(json_path, csv_path))
+
+
+    @torch.no_grad()
+    def evaluate_frequency_predictivity(self, task_id):
+        frequency_cfg = self.cfg.ANALYSIS.FREQUENCY
+        predictivity_cfg = frequency_cfg.PREDICTIVITY
+        model = self.model.module if self.is_distributed else self.model
+        band_name = predictivity_cfg.BAND
+        band_index = list(frequency_cfg.BAND_NAMES).index(band_name)
+
+        accumulated_class_ids = np.concatenate(
+            self.data_manager.class_index_in_task[:task_id + 1]
+        )
+        num_classes = len(accumulated_class_ids)
+        class_names = np.array(self.data_manager.class_names)[accumulated_class_ids]
+        text_features, _ = model.inference_text_feature(
+            class_names, self.data_manager.template, cls_begin_index=0
+        )
+
+        support_records = {
+            record['class_id']: record
+            for record in self.frequency_records
+            if record['class_id'] < num_classes
+        }
+        missing_classes = [
+            class_id for class_id in range(num_classes)
+            if class_id not in support_records
+        ]
+        if missing_classes:
+            raise RuntimeError(
+                'Missing support frequency records for classes {}'.format(missing_classes)
+            )
+
+        support_mean = torch.tensor([
+            support_records[class_id]['bands'][band_name]['mean']
+            for class_id in range(num_classes)
+        ], dtype=torch.float32)
+        support_std = torch.tensor([
+            support_records[class_id]['bands'][band_name]['std']
+            for class_id in range(num_classes)
+        ], dtype=torch.float32)
+        support_snr = support_mean / (
+            support_std + predictivity_cfg.RELIABILITY_EPS
+        )
+        predicted_hard_gate = (support_mean >= 0).float()
+        predicted_soft_gate = torch.sigmoid(
+            support_mean / predictivity_cfg.SOFT_GATE_TEMPERATURE
+        )
+
+        test_loader = self.data_manager.get_dataloader(
+            task_id, source='test', mode='test'
+        )
+        full_logits_list = []
+        removed_logits_list = []
+        labels_list = []
+        test_contribution_list = []
+
+        print(
+            'Evaluating support-to-test frequency predictivity for task {} ...'.format(
+                task_id
+            )
+        )
+        for batch in tqdm(test_loader):
+            images, labels = self.parse_batch(batch)
+            full_features = F.normalize(model.extract_img_feature(images), dim=-1)
+            removed_images = self.frequency_band_stop.remove(images, band_index)
+            removed_features = F.normalize(
+                model.extract_img_feature(removed_images), dim=-1
+            )
+
+            full_logits = (full_features.float() @ text_features.float().T)
+            removed_logits = (removed_features.float() @ text_features.float().T)
+            full_margins = semantic_margins(full_features, text_features, labels)
+            removed_margins = semantic_margins(
+                removed_features, text_features, labels
+            )
+
+            full_logits_list.append(full_logits.cpu())
+            removed_logits_list.append(removed_logits.cpu())
+            labels_list.append(labels.cpu())
+            test_contribution_list.append((full_margins - removed_margins).cpu())
+
+        full_logits = torch.cat(full_logits_list, dim=0)
+        removed_logits = torch.cat(removed_logits_list, dim=0)
+        labels = torch.cat(labels_list, dim=0).long()
+        test_contributions = torch.cat(test_contribution_list, dim=0).float()
+        full_predictions = full_logits.argmax(dim=1)
+        removed_predictions = removed_logits.argmax(dim=1)
+
+        class_records = []
+        test_mean = torch.zeros(num_classes, dtype=torch.float32)
+        full_class_accuracy = torch.zeros(num_classes, dtype=torch.float32)
+        removed_class_accuracy = torch.zeros(num_classes, dtype=torch.float32)
+        class_sample_counts = torch.zeros(num_classes, dtype=torch.long)
+        for class_id in range(num_classes):
+            class_mask = labels == class_id
+            class_sample_counts[class_id] = int(class_mask.sum())
+            test_mean[class_id] = test_contributions[class_mask].mean()
+            full_class_accuracy[class_id] = (
+                full_predictions[class_mask] == class_id
+            ).float().mean()
+            removed_class_accuracy[class_id] = (
+                removed_predictions[class_mask] == class_id
+            ).float().mean()
+
+        accuracy_delta = full_class_accuracy - removed_class_accuracy
+        oracle_margin_gate = (test_mean >= 0).float()
+        oracle_accuracy_gate = (accuracy_delta >= 0).float()
+
+        def gated_logits(gate):
+            gate = gate.view(1, -1)
+            return gate * full_logits + (1.0 - gate) * removed_logits
+
+        def accuracy(logits):
+            return float((logits.argmax(dim=1) == labels).float().mean())
+
+        full_accuracy = accuracy(full_logits)
+        removed_accuracy = accuracy(removed_logits)
+        equal_mix_accuracy = accuracy(0.5 * (full_logits + removed_logits))
+        predicted_hard_accuracy = accuracy(gated_logits(predicted_hard_gate))
+        predicted_soft_accuracy = accuracy(gated_logits(predicted_soft_gate))
+        oracle_margin_accuracy = accuracy(gated_logits(oracle_margin_gate))
+        oracle_accuracy = accuracy(gated_logits(oracle_accuracy_gate))
+
+        predicted_harmful = support_mean < 0
+
+        def harmful_detection(actual_harmful):
+            true_harmful = predicted_harmful & actual_harmful
+            return {
+                'predicted_harmful_classes': int(predicted_harmful.sum()),
+                'actual_harmful_classes': int(actual_harmful.sum()),
+                'true_harmful_classes': int(true_harmful.sum()),
+                'precision': (
+                    float(true_harmful.sum()) / float(predicted_harmful.sum())
+                    if int(predicted_harmful.sum()) > 0 else None
+                ),
+                'recall': (
+                    float(true_harmful.sum()) / float(actual_harmful.sum())
+                    if int(actual_harmful.sum()) > 0 else None
+                ),
+                'sign_agreement': float(
+                    ((support_mean >= 0) == (~actual_harmful)).float().mean()
+                ),
+            }
+
+        for class_id in range(num_classes):
+            class_records.append({
+                'class_id': class_id,
+                'class_name': str(self.data_manager.class_names[class_id]),
+                'num_test_samples': int(class_sample_counts[class_id]),
+                'support_contribution_mean': float(support_mean[class_id]),
+                'support_contribution_std': float(support_std[class_id]),
+                'support_reliability_snr': float(support_snr[class_id]),
+                'test_contribution_mean': float(test_mean[class_id]),
+                'full_accuracy': float(full_class_accuracy[class_id]),
+                'high_removed_accuracy': float(removed_class_accuracy[class_id]),
+                'accuracy_delta': float(accuracy_delta[class_id]),
+                'predicted_hard_use_full': int(predicted_hard_gate[class_id]),
+                'predicted_soft_use_full_weight': float(predicted_soft_gate[class_id]),
+                'oracle_margin_use_full': int(oracle_margin_gate[class_id]),
+                'oracle_accuracy_use_full': int(oracle_accuracy_gate[class_id]),
+            })
+
+        summary = {
+            'task_id': int(task_id),
+            'num_classes': num_classes,
+            'num_test_samples': int(labels.numel()),
+            'band': band_name,
+            'accuracy': {
+                'full': full_accuracy,
+                'band_removed': removed_accuracy,
+                'equal_mix': equal_mix_accuracy,
+                'predicted_hard_gate': predicted_hard_accuracy,
+                'predicted_soft_gate': predicted_soft_accuracy,
+                'oracle_test_margin_gate': oracle_margin_accuracy,
+                'oracle_test_accuracy_gate': oracle_accuracy,
+            },
+            'support_to_test_correlation': {
+                'mean_vs_test_margin_pearson': pearson_correlation(
+                    support_mean, test_mean
+                ),
+                'mean_vs_test_margin_spearman': spearman_correlation(
+                    support_mean, test_mean
+                ),
+                'snr_vs_test_margin_pearson': pearson_correlation(
+                    support_snr, test_mean
+                ),
+                'snr_vs_test_margin_spearman': spearman_correlation(
+                    support_snr, test_mean
+                ),
+                'mean_vs_accuracy_delta_pearson': pearson_correlation(
+                    support_mean, accuracy_delta
+                ),
+                'mean_vs_accuracy_delta_spearman': spearman_correlation(
+                    support_mean, accuracy_delta
+                ),
+            },
+            'harmful_band_detection': {
+                'against_test_margin': harmful_detection(test_mean < 0),
+                'against_test_accuracy': harmful_detection(accuracy_delta < 0),
+            },
+        }
+        metadata = self._frequency_metadata(
+            competitor_scope='classes accumulated through task {}'.format(task_id)
+        )
+        metadata['predictivity'] = {
+            'strict_session_time': frequency_cfg.COMPETITOR_SCOPE == 'accumulated',
+            'soft_gate_temperature': float(
+                predictivity_cfg.SOFT_GATE_TEMPERATURE
+            ),
+            'reliability_eps': float(predictivity_cfg.RELIABILITY_EPS),
+            'gate_interpretation': '1 uses full image; 0 uses band-removed image',
+        }
+        stem = 'session_{:02d}_frequency_predictivity'.format(task_id)
+        json_path, csv_path = write_predictivity_report(
+            self.frequency_output_dir,
+            stem,
+            class_records,
+            summary,
+            metadata,
+        )
+        self.frequency_predictivity_reports.append(summary)
+        print('Frequency predictivity summary: {}'.format(summary))
+        print('Saved frequency predictivity report: {}, {}'.format(json_path, csv_path))
     
 
     @torch.no_grad()

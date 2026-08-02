@@ -99,6 +99,24 @@ for seed in 1 2 3 4 5; do
 done
 ~~~
 
+## Support-to-test frequency predictivity
+
+Experiment B tests whether a class's five-shot support contribution predicts
+its actual test-time benefit from retaining the high-frequency band. It uses
+only accumulated class names, evaluates the final session, and compares the
+full image, high-frequency removal, equal mixing, support-predicted gates, and
+test-label oracle gates.
+
+~~~BASH
+python main.py --data_cfg ./configs/datasets/cub200.yaml --train_cfg ./configs/trainers/bimc_freq_predictivity.yaml --seed 1
+~~~
+
+Reports are written under
+`outputs/frequency_predictivity/<dataset>_seed<seed>_equal_energy/`. The final
+session JSON contains accuracy comparisons, Pearson/Spearman support-to-test
+correlations, and harmful-frequency precision/recall. In every gate, weight 1
+uses the complete image and weight 0 uses the high-frequency-removed image.
+
 ## Acknowledgment
 
 In this repository, we build our code based on the following excellent open-source projects. We sincerely thank all the authors for sharing their great work:

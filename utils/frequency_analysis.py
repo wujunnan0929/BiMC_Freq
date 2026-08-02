@@ -148,7 +148,7 @@ class FourierBandStop:
         self._mask_cache[key] = masks
         return masks
 
-    def _remove_all_on_current_device(self, normalized_images):
+    def _remove_on_current_device(self, normalized_images, band_indices):
         input_dtype = normalized_images.dtype
         work_images = normalized_images.float().contiguous()
         mean = work_images.new_tensor(CLIP_MEAN).view(1, 3, 1, 1)
@@ -160,16 +160,26 @@ class FourierBandStop:
             rgb_images.shape[-2], rgb_images.shape[-1], rgb_images.device
         )
         counterfactuals = []
-        for mask in masks:
+        for band_index in band_indices:
+            mask = masks[band_index]
             counterfactual = torch.fft.ifft2(
                 spectrum.masked_fill(mask, 0.0), dim=(-2, -1), norm="ortho"
             ).real.clamp(0.0, 1.0)
             counterfactuals.append(((counterfactual - mean) / std).to(input_dtype))
         return counterfactuals
 
-    def remove_all(self, normalized_images):
+    def remove_all(self, normalized_images, band_indices=None):
         if normalized_images.ndim != 4 or normalized_images.shape[1] != 3:
             raise ValueError("normalized_images must have shape [N, 3, H, W]")
+        if band_indices is None:
+            band_indices = list(range(len(self.band_names)))
+        else:
+            band_indices = list(band_indices)
+        if not band_indices or any(
+            not 0 <= band_index < len(self.band_names)
+            for band_index in band_indices
+        ):
+            raise IndexError("band_indices contains an out-of-range index")
 
         original_device = normalized_images.device
         use_cpu = self.fft_device == "cpu" or self._cuda_fft_failed
@@ -178,7 +188,9 @@ class FourierBandStop:
         fft_images = normalized_images.cpu() if use_cpu else normalized_images
 
         try:
-            counterfactuals = self._remove_all_on_current_device(fft_images)
+            counterfactuals = self._remove_on_current_device(
+                fft_images, band_indices
+            )
         except RuntimeError as error:
             is_cuda_fft_error = (
                 fft_images.device.type == "cuda"
@@ -192,8 +204,8 @@ class FourierBandStop:
                 "counterfactual generation; CLIP inference remains on CUDA.".format(error),
                 RuntimeWarning,
             )
-            counterfactuals = self._remove_all_on_current_device(
-                normalized_images.detach().cpu()
+            counterfactuals = self._remove_on_current_device(
+                normalized_images.detach().cpu(), band_indices
             )
 
         return [image.to(original_device) for image in counterfactuals]
@@ -201,7 +213,7 @@ class FourierBandStop:
     def remove(self, normalized_images, band_index):
         if not 0 <= band_index < len(self.band_names):
             raise IndexError("band_index is out of range")
-        return self.remove_all(normalized_images)[band_index]
+        return self.remove_all(normalized_images, [band_index])[0]
 
 
 def semantic_margins(image_features, text_features, labels):
@@ -221,6 +233,45 @@ def semantic_margins(image_features, text_features, labels):
     competitors.scatter_(1, labels.unsqueeze(1), float("-inf"))
     strongest_competitor = competitors.max(dim=1).values
     return correct - strongest_competitor
+
+
+def pearson_correlation(x, y):
+    x = torch.as_tensor(x, dtype=torch.float64)
+    y = torch.as_tensor(y, dtype=torch.float64)
+    if x.shape != y.shape or x.ndim != 1:
+        raise ValueError("x and y must be one-dimensional tensors of equal shape")
+    if x.numel() < 2:
+        return 0.0
+    x = x - x.mean()
+    y = y - y.mean()
+    denominator = torch.sqrt(x.square().sum() * y.square().sum())
+    if float(denominator) == 0.0:
+        return 0.0
+    return float((x * y).sum() / denominator)
+
+
+def _average_ranks(values):
+    values = torch.as_tensor(values, dtype=torch.float64)
+    order = torch.argsort(values, stable=True)
+    sorted_values = values[order]
+    ranks = torch.empty_like(values)
+    start = 0
+    while start < values.numel():
+        end = start + 1
+        while end < values.numel() and sorted_values[end] == sorted_values[start]:
+            end += 1
+        average_rank = 0.5 * (start + end - 1)
+        ranks[order[start:end]] = average_rank
+        start = end
+    return ranks
+
+
+def spearman_correlation(x, y):
+    x = torch.as_tensor(x, dtype=torch.float64)
+    y = torch.as_tensor(y, dtype=torch.float64)
+    if x.shape != y.shape or x.ndim != 1:
+        raise ValueError("x and y must be one-dimensional tensors of equal shape")
+    return pearson_correlation(_average_ranks(x), _average_ranks(y))
 
 
 class FrequencyContributionAccumulator:
@@ -390,4 +441,44 @@ def write_frequency_records(output_dir, stem, records, summary, metadata):
                 row[band_name + "_weight"] = record["frequency_weights"][band_name]
             writer.writerow(row)
 
+    return json_path, csv_path
+
+
+def write_predictivity_report(output_dir, stem, class_records, summary, metadata):
+    os.makedirs(output_dir, exist_ok=True)
+    json_path = os.path.join(output_dir, stem + ".json")
+    csv_path = os.path.join(output_dir, stem + ".csv")
+
+    with open(json_path, "w", encoding="utf-8") as file:
+        json.dump(
+            {
+                "metadata": metadata,
+                "summary": summary,
+                "classes": class_records,
+            },
+            file,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    fieldnames = [
+        "class_id",
+        "class_name",
+        "num_test_samples",
+        "support_contribution_mean",
+        "support_contribution_std",
+        "support_reliability_snr",
+        "test_contribution_mean",
+        "full_accuracy",
+        "high_removed_accuracy",
+        "accuracy_delta",
+        "predicted_hard_use_full",
+        "predicted_soft_use_full_weight",
+        "oracle_margin_use_full",
+        "oracle_accuracy_use_full",
+    ]
+    with open(csv_path, "w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(class_records)
     return json_path, csv_path

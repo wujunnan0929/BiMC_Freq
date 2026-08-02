@@ -9,7 +9,9 @@ from utils.frequency_analysis import (
     FrequencyContributionAccumulator,
     band_energy_fractions,
     equal_energy_band_edges,
+    pearson_correlation,
     semantic_margins,
+    spearman_correlation,
     summarize_frequency_records,
 )
 
@@ -39,6 +41,15 @@ class FourierBandStopTest(unittest.TestCase):
             self.assertEqual(result.shape, normalized.shape)
             self.assertEqual(result.device, normalized.device)
             self.assertTrue(torch.isfinite(result).all())
+
+    def test_selected_band_matches_remove_all(self):
+        normalized = torch.randn(2, 3, 16, 16)
+        transform = FourierBandStop(
+            ['low', 'mid', 'high'], [0.0, 0.15, 0.35, 1.0], fft_device='cpu'
+        )
+        all_results = transform.remove_all(normalized)
+        selected = transform.remove(normalized, 2)
+        self.assertTrue(torch.allclose(selected, all_results[2], atol=1e-6))
 
     def test_radial_masks_partition_all_non_dc_frequencies(self):
         transform = FourierBandStop(
@@ -78,6 +89,13 @@ class FrequencyStatisticsTest(unittest.TestCase):
         labels = torch.tensor([0, 1])
         margins = semantic_margins(image_features, text_features, labels)
         self.assertTrue(torch.allclose(margins, torch.tensor([1.0, 1.0])))
+
+    def test_correlations_handle_monotonic_values_and_ties(self):
+        x = torch.tensor([1.0, 2.0, 2.0, 4.0])
+        y = torch.tensor([2.0, 4.0, 4.0, 8.0])
+        self.assertAlmostEqual(pearson_correlation(x, y), 1.0, places=6)
+        self.assertAlmostEqual(spearman_correlation(x, y), 1.0, places=6)
+        self.assertAlmostEqual(spearman_correlation(x, -y), -1.0, places=6)
 
     def test_class_records_and_summary(self):
         accumulator = FrequencyContributionAccumulator(

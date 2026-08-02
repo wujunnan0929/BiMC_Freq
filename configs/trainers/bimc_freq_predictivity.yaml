@@ -1,0 +1,51 @@
+SEED: 1
+
+DEVICE:
+  DEVICE_NAME: "cuda"
+  GPU_ID: "0;"
+
+DATALOADER:
+  TRAIN:
+    BATCH_SIZE_BASE: 64
+    BATCH_SIZE_INC: 64
+  TEST:
+    BATCH_SIZE: 100
+  NUM_WORKERS: 4
+
+MODEL:
+  BACKBONE:
+    NAME: "ViT-B/16"
+
+TRAINER:
+  BiMC:
+    PREC: "fp16"
+    VISION_CALIBRATION: True
+    LAMBDA_I: 0.1
+    TAU: 16
+    TEXT_CALIBRATION: True
+    LAMBDA_T: 0.5
+    GAMMA_BASE: 1.0
+    GAMMA_INC: 5.0
+    USING_ENSEMBLE: False
+
+ANALYSIS:
+  FREQUENCY:
+    ENABLED: True
+    ANALYSIS_ONLY: True
+    OUTPUT_DIR: "./outputs/frequency_predictivity"
+    BAND_NAMES: ["low", "mid", "high"]
+    BAND_MODE: "equal_energy"
+    BAND_EDGES: [0.0, 0.15, 0.35, 1.0]
+    ENERGY_SAMPLES_PER_CLASS: 20
+    SAMPLES_PER_CLASS: 5
+    WEIGHT_TEMPERATURE: 0.05
+    # Strict FSCIL protocol: no future class names are used by support scores.
+    COMPETITOR_SCOPE: "accumulated"
+    FFT_DEVICE: "cpu"
+    PREDICTIVITY:
+      ENABLED: True
+      # Final session contains every class and avoids repeated test-set encoding.
+      EVAL_SCOPE: "final"
+      BAND: "high"
+      SOFT_GATE_TEMPERATURE: 0.01
+      RELIABILITY_EPS: 0.000001
