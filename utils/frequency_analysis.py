@@ -2,6 +2,7 @@ import csv
 import json
 import math
 import os
+import warnings
 from collections import defaultdict
 
 import torch
@@ -20,16 +21,20 @@ class FourierBandStop:
     low-frequency intervention does not destroy the image's mean colour.
     """
 
-    def __init__(self, band_names, band_edges):
+    def __init__(self, band_names, band_edges, fft_device="auto"):
         if len(band_edges) != len(band_names) + 1:
             raise ValueError("band_edges must contain exactly len(band_names) + 1 values")
         if band_edges[0] != 0.0 or band_edges[-1] != 1.0:
             raise ValueError("band_edges must start at 0.0 and end at 1.0")
         if any(left >= right for left, right in zip(band_edges[:-1], band_edges[1:])):
             raise ValueError("band_edges must be strictly increasing")
+        if fft_device not in ("auto", "cpu", "cuda"):
+            raise ValueError("fft_device must be one of: auto, cpu, cuda")
 
         self.band_names = list(band_names)
         self.band_edges = [float(edge) for edge in band_edges]
+        self.fft_device = fft_device
+        self._cuda_fft_failed = False
         self._mask_cache = {}
 
     def _masks(self, height, width, device):
@@ -55,25 +60,60 @@ class FourierBandStop:
         self._mask_cache[key] = masks
         return masks
 
-    def remove(self, normalized_images, band_index):
-        if normalized_images.ndim != 4 or normalized_images.shape[1] != 3:
-            raise ValueError("normalized_images must have shape [N, 3, H, W]")
-        if not 0 <= band_index < len(self.band_names):
-            raise IndexError("band_index is out of range")
-
+    def _remove_all_on_current_device(self, normalized_images):
         input_dtype = normalized_images.dtype
-        work_images = normalized_images.float()
+        work_images = normalized_images.float().contiguous()
         mean = work_images.new_tensor(CLIP_MEAN).view(1, 3, 1, 1)
         std = work_images.new_tensor(CLIP_STD).view(1, 3, 1, 1)
-        rgb_images = (work_images * std + mean).clamp(0.0, 1.0)
+        rgb_images = ((work_images * std + mean).clamp(0.0, 1.0)).contiguous()
 
         spectrum = torch.fft.fft2(rgb_images, dim=(-2, -1), norm="ortho")
-        mask = self._masks(rgb_images.shape[-2], rgb_images.shape[-1], rgb_images.device)[band_index]
-        counterfactual = torch.fft.ifft2(
-            spectrum.masked_fill(mask, 0.0), dim=(-2, -1), norm="ortho"
-        ).real.clamp(0.0, 1.0)
-        counterfactual = (counterfactual - mean) / std
-        return counterfactual.to(dtype=input_dtype)
+        masks = self._masks(
+            rgb_images.shape[-2], rgb_images.shape[-1], rgb_images.device
+        )
+        counterfactuals = []
+        for mask in masks:
+            counterfactual = torch.fft.ifft2(
+                spectrum.masked_fill(mask, 0.0), dim=(-2, -1), norm="ortho"
+            ).real.clamp(0.0, 1.0)
+            counterfactuals.append(((counterfactual - mean) / std).to(input_dtype))
+        return counterfactuals
+
+    def remove_all(self, normalized_images):
+        if normalized_images.ndim != 4 or normalized_images.shape[1] != 3:
+            raise ValueError("normalized_images must have shape [N, 3, H, W]")
+
+        original_device = normalized_images.device
+        use_cpu = self.fft_device == "cpu" or self._cuda_fft_failed
+        if self.fft_device == "cuda" and original_device.type != "cuda":
+            raise ValueError("fft_device='cuda' requires CUDA input images")
+        fft_images = normalized_images.cpu() if use_cpu else normalized_images
+
+        try:
+            counterfactuals = self._remove_all_on_current_device(fft_images)
+        except RuntimeError as error:
+            is_cuda_fft_error = (
+                fft_images.device.type == "cuda"
+                and "cufft" in str(error).lower()
+            )
+            if self.fft_device == "cuda" or not is_cuda_fft_error:
+                raise
+            self._cuda_fft_failed = True
+            warnings.warn(
+                "CUDA FFT failed ({}). Falling back to CPU FFT for frequency "
+                "counterfactual generation; CLIP inference remains on CUDA.".format(error),
+                RuntimeWarning,
+            )
+            counterfactuals = self._remove_all_on_current_device(
+                normalized_images.detach().cpu()
+            )
+
+        return [image.to(original_device) for image in counterfactuals]
+
+    def remove(self, normalized_images, band_index):
+        if not 0 <= band_index < len(self.band_names):
+            raise IndexError("band_index is out of range")
+        return self.remove_all(normalized_images)[band_index]
 
 
 def semantic_margins(image_features, text_features, labels):

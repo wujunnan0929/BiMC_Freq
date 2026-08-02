@@ -26,6 +26,18 @@ class FourierBandStopTest(unittest.TestCase):
             result = transform.remove(normalized, band_index)
             self.assertTrue(torch.allclose(result, normalized, atol=1e-5))
 
+    def test_remove_all_returns_one_image_batch_per_band(self):
+        normalized = torch.randn(2, 3, 16, 16)
+        transform = FourierBandStop(
+            ['low', 'mid', 'high'], [0.0, 0.15, 0.35, 1.0], fft_device='cpu'
+        )
+        results = transform.remove_all(normalized)
+        self.assertEqual(len(results), 3)
+        for result in results:
+            self.assertEqual(result.shape, normalized.shape)
+            self.assertEqual(result.device, normalized.device)
+            self.assertTrue(torch.isfinite(result).all())
+
     def test_radial_masks_partition_all_non_dc_frequencies(self):
         transform = FourierBandStop(
             ['low', 'mid', 'high'], [0.0, 0.15, 0.35, 1.0]

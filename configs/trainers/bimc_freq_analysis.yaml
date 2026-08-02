@@ -40,3 +40,6 @@ ANALYSIS:
     # "all" makes class contributions comparable across sessions. It is an
     # offline diagnostic and does not represent a deployable FSCIL protocol.
     COMPETITOR_SCOPE: "all"
+    # PyTorch 1.13.1 may raise CUFFT_INTERNAL_ERROR on some CUDA/cuFFT stacks.
+    # CPU only performs the FFT; CLIP feature extraction remains on CUDA.
+    FFT_DEVICE: "cpu"

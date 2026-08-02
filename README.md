@@ -68,6 +68,12 @@ frequency contribution varies more strongly between classes. The default
 between sessions; this is an offline analysis setting, not a deployable FSCIL
 protocol. Set it to `accumulated` for a strict session-time diagnostic.
 
+The supplied analysis config uses `FFT_DEVICE: cpu` for compatibility with
+PyTorch 1.13.1 CUDA environments that can raise `CUFFT_INTERNAL_ERROR` for
+batched 224x224 transforms. Only counterfactual image generation runs on CPU;
+CLIP encoding still runs on CUDA. `FFT_DEVICE: auto` first tries the input
+device and automatically falls back to CPU after a cuFFT failure.
+
 ## Acknowledgment
 
 In this repository, we build our code based on the following excellent open-source projects. We sincerely thank all the authors for sharing their great work:

@@ -50,7 +50,9 @@ class Runner:
             if frequency_cfg.SAMPLES_PER_CLASS <= 0:
                 raise ValueError('ANALYSIS.FREQUENCY.SAMPLES_PER_CLASS must be positive')
             self.frequency_band_stop = FourierBandStop(
-                frequency_cfg.BAND_NAMES, frequency_cfg.BAND_EDGES
+                frequency_cfg.BAND_NAMES,
+                frequency_cfg.BAND_EDGES,
+                fft_device=frequency_cfg.FFT_DEVICE,
             )
             self.frequency_output_dir = os.path.join(
                 frequency_cfg.OUTPUT_DIR,
@@ -190,8 +192,10 @@ class Runner:
             full_margins = semantic_margins(full_features, text_features, labels)
 
             contributions = {}
-            for band_index, band_name in enumerate(frequency_cfg.BAND_NAMES):
-                counterfactual_images = self.frequency_band_stop.remove(images, band_index)
+            counterfactual_batches = self.frequency_band_stop.remove_all(images)
+            for band_name, counterfactual_images in zip(
+                frequency_cfg.BAND_NAMES, counterfactual_batches
+            ):
                 counterfactual_features = F.normalize(
                     model.extract_img_feature(counterfactual_images), dim=-1
                 )
@@ -232,6 +236,8 @@ class Runner:
             'weight_temperature': float(frequency_cfg.WEIGHT_TEMPERATURE),
             'competitor_scope': competitor_scope,
             'configured_competitor_scope': frequency_cfg.COMPETITOR_SCOPE,
+            'configured_fft_device': frequency_cfg.FFT_DEVICE,
+            'cuda_fft_fell_back_to_cpu': self.frequency_band_stop._cuda_fft_failed,
             'dc_component_preserved': True,
         }
 
