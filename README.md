@@ -85,6 +85,52 @@ The direct implementation evaluates four frozen CLIP image encodings per
 sample (original plus three bands), trading runtime for a clean experimental
 isolation of the frequency contribution.
 
+### Frequency V2
+
+V2 replaces isolated residual inputs with three CLIP-compatible views:
+
+- low: the low-pass image;
+- middle: low + middle frequencies (the original image without high-frequency
+  noise);
+- high: the original image with its high-frequency residual enhanced.
+
+It also attenuates semantic correction for uncertain prototypes, disables
+frequency-wise novel-to-base calibration, and estimates a class-specific
+frequency alpha from visual-semantic agreement, prototype compactness, and
+support-set size. `FREQ_ALPHA` is the maximum rather than a fixed coefficient
+when `RELIABILITY_ALPHA` is enabled.
+
+~~~BASH
+# Main V2 experiment. Use FFT_DEVICE cpu on a server with broken cuFFT.
+python main.py \
+  --data_cfg ./configs/datasets/cub200.yaml \
+  --train_cfg ./configs/trainers/bimc_frequency_v2.yaml \
+  --opts TRAINER.BiMC.FREQUENCY.FFT_DEVICE cpu
+
+# Three-original-view control; no FFT is executed in this mode.
+python main.py \
+  --data_cfg ./configs/datasets/cub200.yaml \
+  --train_cfg ./configs/trainers/bimc_frequency_v2.yaml \
+  --opts TRAINER.BiMC.FREQUENCY.VIEW_MODE original
+~~~
+
+Single-view ablations use exact zero priors and a fixed alpha so only the view
+changes. Replace `BAND_PRIOR` with `[0.0,1.0,0.0]` or `[0.0,0.0,1.0]` for the
+middle-only or high-only run.
+
+~~~BASH
+# Low-only example
+python main.py \
+  --data_cfg ./configs/datasets/cub200.yaml \
+  --train_cfg ./configs/trainers/bimc_frequency_v2.yaml \
+  --opts \
+    TRAINER.BiMC.FREQUENCY.FFT_DEVICE cpu \
+    TRAINER.BiMC.FREQUENCY.ADAPTIVE_FUSION False \
+    TRAINER.BiMC.FREQUENCY.BAND_PRIOR '[1.0,0.0,0.0]' \
+    TRAINER.BiMC.FREQUENCY.RELIABILITY_ALPHA False \
+    TRAINER.BiMC.FREQUENCY.FREQ_ALPHA 0.10
+~~~
+
 ## Acknowledgment
 
 In this repository, we build our code based on the following excellent open-source projects. We sincerely thank all the authors for sharing their great work:

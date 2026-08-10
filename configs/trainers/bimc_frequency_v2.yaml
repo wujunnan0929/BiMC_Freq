@@ -29,42 +29,38 @@ TRAINER:
 
     GAMMA_BASE: 1.0
     GAMMA_INC: 5.0
-
-    USING_ENSEMBLE: False
+    USING_ENSEMBLE: True
 
     FREQUENCY:
       ENABLED: True
 
-      # Normalized radial FFT cutoffs: [0, LOW], (LOW, HIGH], (HIGH, 1].
       LOW_CUTOFF: 0.18
       HIGH_CUTOFF: 0.45
-      CENTER_RESIDUAL_BANDS: True
-      # Keep cuFFT plans small; use 1 on older CUDA/driver combinations.
       FFT_BATCH_SIZE: 8
-      # auto: CUDA first then exact CPU fallback; use cpu on broken cuFFT stacks.
       FFT_DEVICE: "auto"
-      # Legacy isolated-band inputs used in the first experiment version.
-      VIEW_MODE: "disjoint"
-      HIGH_ENHANCE: 0.5
-      NOVEL_VISION_CALIBRATION: True
 
-      # Semantic correction is uncertainty-aware and agreement-gated.
+      # CLIP-compatible views: low-pass, low+middle, original+enhanced high.
+      VIEW_MODE: "natural"
+      HIGH_ENHANCE: 0.5
+      CENTER_RESIDUAL_BANDS: True
+      # Keep original BiMC calibration, but do not pull each novel band to base bands.
+      NOVEL_VISION_CALIBRATION: False
+
       SEMANTIC_WEIGHT: 0.25
       MAX_SEMANTIC_WEIGHT: 0.65
-      SEMANTIC_GATE_MODE: "amplify"
-      # Mix structured prompts with band-specific descriptions mined from GPT_PATH.
+      # Suppress semantic correction for uncertain frequency prototypes.
+      SEMANTIC_GATE_MODE: "attenuate"
       DESCRIPTION_WEIGHT: 0.5
       UNCERTAINTY_SCALE: 2.0
 
-      # Class-adaptive low/middle/high frequency fusion.
       ALIGNMENT_SCALE: 4.0
       FUSION_TEMPERATURE: 1.0
       ADAPTIVE_FUSION: True
       BAND_PRIOR: [1.0, 1.0, 1.0]
 
-      # Probability interpolation between original BiMC and frequency branch.
-      FREQ_ALPHA: 0.35
-      RELIABILITY_ALPHA: False
+      # Maximum class-wise alpha; reliability usually yields a smaller value.
+      FREQ_ALPHA: 0.20
+      RELIABILITY_ALPHA: True
       MIN_FREQ_ALPHA: 0.0
       RELIABILITY_UNCERTAINTY_SCALE: 2.0
       RELIABILITY_SHOT_TAU: 5.0
@@ -75,8 +71,6 @@ TRAINER:
         - "a photo of a {}, emphasizing its parts, spatial structure, and medium-scale patterns."
         - "a photo of a {}, emphasizing its fine texture, edges, colors, and local details."
 
-      # Keywords softly route the existing class descriptions to semantic bands.
-      # If a band has no match, all descriptions of that class are used.
       LOW_KEYWORDS: ["shape", "silhouette", "overall", "body", "size", "large", "small", "long", "round"]
       MIDDLE_KEYWORDS: ["part", "head", "wing", "tail", "leg", "beak", "spatial", "structure"]
       HIGH_KEYWORDS: ["texture", "pattern", "stripe", "spot", "color", "edge", "feather", "fur", "detail"]

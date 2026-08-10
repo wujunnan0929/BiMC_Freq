@@ -7,8 +7,10 @@ import json
 from models.frequency import (
     RadialFrequencyDecomposer,
     calibrate_frequency_prototypes,
+    compute_frequency_class_alpha,
     compute_frequency_logits,
     compute_frequency_prototypes,
+    mix_frequency_probabilities,
     route_description_embeddings,
 )
 
@@ -68,6 +70,8 @@ class BiMC(nn.Module):
                 center_residual_bands=frequency_cfg.CENTER_RESIDUAL_BANDS,
                 fft_batch_size=frequency_cfg.FFT_BATCH_SIZE,
                 fft_device=frequency_cfg.FFT_DEVICE,
+                view_mode=frequency_cfg.VIEW_MODE,
+                high_enhance=frequency_cfg.HIGH_ENHANCE,
             ).to(self.device)
 
 
@@ -146,11 +150,18 @@ class BiMC(nn.Module):
         prototypes = F.normalize(prototypes, dim=-1)
 
         if not self.frequency_enabled:
-            return all_features, all_labels, prototypes, None, None
+            return all_features, all_labels, prototypes, None, None, None
 
         all_frequency_features = torch.cat(all_frequency_features, dim=0)
-        frequency_prototypes, frequency_uncertainty = compute_frequency_prototypes(
-            all_frequency_features, all_labels, ordered_labels
+        (
+            frequency_prototypes,
+            frequency_uncertainty,
+            frequency_sample_counts,
+        ) = compute_frequency_prototypes(
+            all_frequency_features,
+            all_labels,
+            ordered_labels,
+            return_counts=True,
         )
         return (
             all_features,
@@ -158,6 +169,7 @@ class BiMC(nn.Module):
             prototypes,
             frequency_prototypes,
             frequency_uncertainty,
+            frequency_sample_counts,
         )
 
 
@@ -267,6 +279,7 @@ class BiMC(nn.Module):
             images_proto,
             frequency_image_proto,
             frequency_uncertainty,
+            frequency_sample_counts,
         ) = self.inference_all_img_feature(
             loader, cls_begin_index, class_index=class_index
         )
@@ -275,7 +288,10 @@ class BiMC(nn.Module):
             if calibrate_novel_vision_proto:
                 print(f'calibrate vision proto on class [{class_index}]')
                 images_proto = self.soft_calibration(self.base_vision_prototype, images_proto)
-                if self.frequency_enabled:
+                if (
+                    self.frequency_enabled
+                    and self.cfg.TRAINER.BiMC.FREQUENCY.NOVEL_VISION_CALIBRATION
+                ):
                     print('calibrate low/middle/high visual prototypes independently')
                     calibrated_bands = []
                     for band_id in range(frequency_image_proto.shape[1]):
@@ -316,16 +332,47 @@ class BiMC(nn.Module):
                 alignment_scale=frequency_cfg.ALIGNMENT_SCALE,
                 fusion_temperature=frequency_cfg.FUSION_TEMPERATURE,
                 adaptive_fusion=frequency_cfg.ADAPTIVE_FUSION,
+                semantic_gate_mode=frequency_cfg.SEMANTIC_GATE_MODE,
                 band_prior=torch.as_tensor(
                     frequency_cfg.BAND_PRIOR,
                     device=frequency_image_proto.device,
                     dtype=frequency_image_proto.dtype,
                 ),
             )
+            if frequency_cfg.RELIABILITY_ALPHA:
+                frequency_class_alpha, frequency_reliability = (
+                    compute_frequency_class_alpha(
+                        alignment=frequency_alignment,
+                        uncertainty=frequency_uncertainty,
+                        band_weights=frequency_band_weights,
+                        sample_counts=frequency_sample_counts,
+                        max_alpha=frequency_cfg.FREQ_ALPHA,
+                        min_alpha=frequency_cfg.MIN_FREQ_ALPHA,
+                        uncertainty_scale=(
+                            frequency_cfg.RELIABILITY_UNCERTAINTY_SCALE
+                        ),
+                        shot_tau=frequency_cfg.RELIABILITY_SHOT_TAU,
+                        reliability_power=frequency_cfg.RELIABILITY_POWER,
+                    )
+                )
+            else:
+                frequency_class_alpha = frequency_image_proto.new_full(
+                    (frequency_image_proto.shape[0],), frequency_cfg.FREQ_ALPHA
+                )
+                frequency_reliability = frequency_image_proto.new_ones(
+                    frequency_image_proto.shape[0]
+                )
             mean_weights = frequency_band_weights.float().mean(dim=0).tolist()
             print(
                 'mean frequency weights (low/middle/high): '
                 + ', '.join('{:.3f}'.format(value) for value in mean_weights)
+            )
+            print(
+                'frequency alpha: mean={:.3f}, min={:.3f}, max={:.3f}'.format(
+                    frequency_class_alpha.float().mean().item(),
+                    frequency_class_alpha.float().min().item(),
+                    frequency_class_alpha.float().max().item(),
+                )
             )
             frequency_state = {
                 'frequency_image_proto': frequency_image_proto,
@@ -334,9 +381,12 @@ class BiMC(nn.Module):
                 'frequency_semantic_proto': frequency_semantic_proto,
                 'frequency_calibrated_proto': frequency_calibrated_proto,
                 'frequency_uncertainty': frequency_uncertainty,
+                'frequency_sample_counts': frequency_sample_counts,
                 'frequency_band_weights': frequency_band_weights,
                 'frequency_semantic_gates': frequency_semantic_gates,
                 'frequency_alignment': frequency_alignment,
+                'frequency_class_alpha': frequency_class_alpha,
+                'frequency_reliability': frequency_reliability,
             }
 
 
@@ -378,7 +428,8 @@ class BiMC(nn.Module):
                            text_features,
                            beta,
                            frequency_proto=None,
-                           frequency_band_weights=None):
+                           frequency_band_weights=None,
+                           frequency_class_alpha=None):
     
         def knn_similarity_scores(queries, support_features, support_labels):
             """
@@ -454,10 +505,15 @@ class BiMC(nn.Module):
                 frequency_band_weights,
             )
             prob_frequency = F.softmax(logits_frequency, dim=-1)
-            frequency_alpha = self.cfg.TRAINER.BiMC.FREQUENCY.FREQ_ALPHA
-            prob_fused_proto = (
-                (1.0 - frequency_alpha) * prob_fused_proto
-                + frequency_alpha * prob_frequency
+            if frequency_class_alpha is None:
+                frequency_class_alpha = prob_frequency.new_full(
+                    (prob_frequency.shape[1],),
+                    self.cfg.TRAINER.BiMC.FREQUENCY.FREQ_ALPHA,
+                )
+            prob_fused_proto = mix_frequency_probabilities(
+                prob_fused_proto,
+                prob_frequency,
+                frequency_class_alpha,
             )
 
         logits_cov = _cov_forward(img_feat, image_proto, cov_image)
@@ -494,6 +550,9 @@ class BiMC(nn.Module):
         if not self.frequency_enabled or self.frequency_decomposer is None:
             raise RuntimeError("Frequency feature extraction is not enabled.")
         images = images.to(self.device)
+        if self.frequency_decomposer.view_mode == "original":
+            features = F.normalize(self.clip_model.encode_image(images), dim=-1)
+            return features.unsqueeze(1).expand(-1, 3, -1)
         band_images = self.frequency_decomposer(images)
         band_features = []
         # Encode each band separately to keep peak memory close to baseline.

@@ -55,9 +55,12 @@ class Runner:
                 'frequency_semantic_proto',
                 'frequency_calibrated_proto',
                 'frequency_uncertainty',
+                'frequency_sample_counts',
                 'frequency_band_weights',
                 'frequency_semantic_gates',
                 'frequency_alignment',
+                'frequency_class_alpha',
+                'frequency_reliability',
             ])
 
         for key in keys_to_merge:
@@ -133,6 +136,7 @@ class Runner:
         description_targets = state_dict['description_targets']
         frequency_proto = state_dict.get('frequency_calibrated_proto')
         frequency_band_weights = state_dict.get('frequency_band_weights')
+        frequency_class_alpha = state_dict.get('frequency_class_alpha')
 
         num_base_class = len(self.data_manager.class_index_in_task[0])
         num_accumulated_class = max(self.data_manager.class_index_in_task[task_id]) + 1
@@ -152,7 +156,8 @@ class Runner:
                                                    text_features,
                                                    beta=beta,
                                                    frequency_proto=frequency_proto,
-                                                   frequency_band_weights=frequency_band_weights)
+                                                   frequency_band_weights=frequency_band_weights,
+                                                   frequency_class_alpha=frequency_class_alpha)
 
             all_logits.append(logits)
             all_targets.append(targets)

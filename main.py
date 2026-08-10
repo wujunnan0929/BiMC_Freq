@@ -79,8 +79,12 @@ def extend_cfg(cfg):
     cfg.TRAINER.BiMC.FREQUENCY.CENTER_RESIDUAL_BANDS = True
     cfg.TRAINER.BiMC.FREQUENCY.FFT_BATCH_SIZE = 8
     cfg.TRAINER.BiMC.FREQUENCY.FFT_DEVICE = "auto"
+    cfg.TRAINER.BiMC.FREQUENCY.VIEW_MODE = "disjoint"
+    cfg.TRAINER.BiMC.FREQUENCY.HIGH_ENHANCE = 0.5
+    cfg.TRAINER.BiMC.FREQUENCY.NOVEL_VISION_CALIBRATION = True
     cfg.TRAINER.BiMC.FREQUENCY.SEMANTIC_WEIGHT = 0.25
     cfg.TRAINER.BiMC.FREQUENCY.MAX_SEMANTIC_WEIGHT = 0.65
+    cfg.TRAINER.BiMC.FREQUENCY.SEMANTIC_GATE_MODE = "amplify"
     cfg.TRAINER.BiMC.FREQUENCY.DESCRIPTION_WEIGHT = 0.5
     cfg.TRAINER.BiMC.FREQUENCY.UNCERTAINTY_SCALE = 2.0
     cfg.TRAINER.BiMC.FREQUENCY.ALIGNMENT_SCALE = 4.0
@@ -88,6 +92,11 @@ def extend_cfg(cfg):
     cfg.TRAINER.BiMC.FREQUENCY.ADAPTIVE_FUSION = True
     cfg.TRAINER.BiMC.FREQUENCY.BAND_PRIOR = [1.0, 1.0, 1.0]
     cfg.TRAINER.BiMC.FREQUENCY.FREQ_ALPHA = 0.35
+    cfg.TRAINER.BiMC.FREQUENCY.RELIABILITY_ALPHA = False
+    cfg.TRAINER.BiMC.FREQUENCY.MIN_FREQ_ALPHA = 0.0
+    cfg.TRAINER.BiMC.FREQUENCY.RELIABILITY_UNCERTAINTY_SCALE = 2.0
+    cfg.TRAINER.BiMC.FREQUENCY.RELIABILITY_SHOT_TAU = 5.0
+    cfg.TRAINER.BiMC.FREQUENCY.RELIABILITY_POWER = 1.0
     cfg.TRAINER.BiMC.FREQUENCY.PROMPTS = [
         "a photo of a {}, emphasizing its global shape, silhouette, and coarse spatial layout.",
         "a photo of a {}, emphasizing its parts, spatial structure, and medium-scale patterns.",
@@ -107,7 +116,7 @@ def extend_cfg(cfg):
 
     
 
-def setup_cfg(dataset_cfg_file, method_cfg_file):
+def setup_cfg(dataset_cfg_file, method_cfg_file, opts=None):
     cfg = CN()
     extend_cfg(cfg)
 
@@ -116,6 +125,10 @@ def setup_cfg(dataset_cfg_file, method_cfg_file):
 
     # 2. From the method config file
     cfg.merge_from_file(method_cfg_file)
+
+    # 3. Optional command-line overrides for controlled ablations
+    if opts:
+        cfg.merge_from_list(opts)
 
     cfg.freeze()
     return cfg
@@ -127,13 +140,19 @@ def main():
 
     parser.add_argument('--data_cfg', type=str, help="Path to the data configuration file")
     parser.add_argument('--train_cfg', type=str, help="Path to the training configuration file")
+    parser.add_argument(
+        '--opts',
+        default=None,
+        nargs=argparse.REMAINDER,
+        help="Override config values, e.g. TRAINER.BiMC.FREQUENCY.VIEW_MODE natural",
+    )
 
     args = parser.parse_args()
 
     data_cfg = args.data_cfg
     train_cfg = args.train_cfg
 
-    cfg = setup_cfg(data_cfg, train_cfg)
+    cfg = setup_cfg(data_cfg, train_cfg, args.opts)
 
     # Set the random seed and GPU ID
     set_seed(cfg.SEED)
