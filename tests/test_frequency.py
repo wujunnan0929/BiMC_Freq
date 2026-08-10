@@ -32,7 +32,7 @@ class FrequencyModuleTest(unittest.TestCase):
             0.2, 0.55, fft_batch_size=3
         ).split_pixels(pixels)
         single = RadialFrequencyDecomposer(
-            0.2, 0.55, fft_batch_size=1
+            0.2, 0.55, fft_batch_size=1, fft_device="cpu"
         ).split_pixels(pixels)
 
         self.assertTrue(torch.allclose(chunked, single, atol=1e-6, rtol=1e-6))

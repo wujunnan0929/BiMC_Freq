@@ -6,6 +6,7 @@ logit fusion independently testable.
 """
 
 from typing import Optional, Sequence, Tuple
+import warnings
 
 import torch
 import torch.nn as nn
@@ -29,6 +30,7 @@ class RadialFrequencyDecomposer(nn.Module):
         std: Sequence[float] = (0.26862954, 0.26130258, 0.27577711),
         center_residual_bands: bool = True,
         fft_batch_size: int = 8,
+        fft_device: str = "auto",
     ) -> None:
         super().__init__()
         if not 0.0 < low_cutoff < high_cutoff < 1.0:
@@ -42,6 +44,11 @@ class RadialFrequencyDecomposer(nn.Module):
         if fft_batch_size <= 0:
             raise ValueError("FFT batch size must be positive.")
         self.fft_batch_size = int(fft_batch_size)
+        fft_device = fft_device.lower()
+        if fft_device not in ("auto", "cuda", "cpu"):
+            raise ValueError("FFT device must be one of: auto, cuda, cpu.")
+        self.fft_device = fft_device
+        self._cpu_fallback_warned = False
         self.register_buffer("mean", torch.tensor(mean).view(1, 3, 1, 1))
         self.register_buffer("std", torch.tensor(std).view(1, 3, 1, 1))
 
@@ -68,6 +75,16 @@ class RadialFrequencyDecomposer(nn.Module):
         """Return exact band components with shape ``[N, 3, C, H, W]``."""
         if pixels.ndim != 4:
             raise ValueError("Expected pixels with shape [N, C, H, W].")
+        original_device = pixels.device
+        if self.fft_device == "cpu" and pixels.is_cuda:
+            cpu_components = self.split_pixels(pixels.cpu())
+            return cpu_components.to(original_device)
+        if self.fft_device == "cuda" and not pixels.is_cuda:
+            if not torch.cuda.is_available():
+                raise RuntimeError("FFT_DEVICE is cuda, but CUDA is unavailable.")
+            cuda_components = self.split_pixels(pixels.cuda())
+            return cuda_components.to(original_device)
+
         height, width = pixels.shape[-2:]
         masks = self._radial_masks(height, width, pixels.device)
 
@@ -104,10 +121,21 @@ class RadialFrequencyDecomposer(nn.Module):
             except RuntimeError as retry_error:
                 if "CUFFT" not in str(retry_error).upper():
                     raise
+                if self.fft_device == "auto":
+                    if not self._cpu_fallback_warned:
+                        warnings.warn(
+                            "cuFFT failed with chunk size 1; falling back to "
+                            "exact CPU FFT. Set FFT_DEVICE: cpu to skip the "
+                            "failed CUDA attempt on subsequent runs.",
+                            RuntimeWarning,
+                        )
+                        self._cpu_fallback_warned = True
+                    cpu_components = self.split_pixels(pixels.cpu())
+                    return cpu_components.to(original_device)
                 raise RuntimeError(
                     "cuFFT failed even with FFT_BATCH_SIZE=1. Check that the "
                     "NVIDIA driver matches the CUDA runtime used by PyTorch, "
-                    "or run the frequency decomposer on CPU."
+                    "or set FFT_DEVICE: cpu."
                 ) from retry_error
 
     def forward(self, normalized_images: torch.Tensor) -> torch.Tensor:

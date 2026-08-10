@@ -77,6 +77,9 @@ Important ablations can be configured in
 - `LOW_CUTOFF` and `HIGH_CUTOFF` control the radial FFT bands.
 - `FFT_BATCH_SIZE` only controls internal FFT chunking (not the dataloader
   batch size). Reduce it to `1` if an older CUDA stack reports a cuFFT error.
+- `FFT_DEVICE` accepts `auto`, `cuda`, or `cpu`. `auto` falls back to exact CPU
+  FFT when cuFFT fails; set it to `cpu` to avoid repeated CUDA attempts on a
+  known-incompatible server.
 
 The direct implementation evaluates four frozen CLIP image encodings per
 sample (original plus three bands), trading runtime for a clean experimental

@@ -41,6 +41,8 @@ TRAINER:
       CENTER_RESIDUAL_BANDS: True
       # Keep cuFFT plans small; use 1 on older CUDA/driver combinations.
       FFT_BATCH_SIZE: 8
+      # auto: CUDA first then exact CPU fallback; use cpu on broken cuFFT stacks.
+      FFT_DEVICE: "auto"
 
       # Semantic correction is uncertainty-aware and agreement-gated.
       SEMANTIC_WEIGHT: 0.25

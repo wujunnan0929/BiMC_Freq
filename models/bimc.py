@@ -67,6 +67,7 @@ class BiMC(nn.Module):
                 high_cutoff=frequency_cfg.HIGH_CUTOFF,
                 center_residual_bands=frequency_cfg.CENTER_RESIDUAL_BANDS,
                 fft_batch_size=frequency_cfg.FFT_BATCH_SIZE,
+                fft_device=frequency_cfg.FFT_DEVICE,
             ).to(self.device)
 
 
