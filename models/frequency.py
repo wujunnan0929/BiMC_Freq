@@ -28,6 +28,7 @@ class RadialFrequencyDecomposer(nn.Module):
         mean: Sequence[float] = (0.48145466, 0.4578275, 0.40821073),
         std: Sequence[float] = (0.26862954, 0.26130258, 0.27577711),
         center_residual_bands: bool = True,
+        fft_batch_size: int = 8,
     ) -> None:
         super().__init__()
         if not 0.0 < low_cutoff < high_cutoff < 1.0:
@@ -38,6 +39,9 @@ class RadialFrequencyDecomposer(nn.Module):
         self.low_cutoff = float(low_cutoff)
         self.high_cutoff = float(high_cutoff)
         self.center_residual_bands = bool(center_residual_bands)
+        if fft_batch_size <= 0:
+            raise ValueError("FFT batch size must be positive.")
+        self.fft_batch_size = int(fft_batch_size)
         self.register_buffer("mean", torch.tensor(mean).view(1, 3, 1, 1))
         self.register_buffer("std", torch.tensor(std).view(1, 3, 1, 1))
 
@@ -65,17 +69,46 @@ class RadialFrequencyDecomposer(nn.Module):
         if pixels.ndim != 4:
             raise ValueError("Expected pixels with shape [N, C, H, W].")
         height, width = pixels.shape[-2:]
-        # FFT on fp16 tensors is restricted for some CUDA sizes (e.g. 224), so
-        # always decompose in fp32 and cast the CLIP inputs later.
-        spectrum = torch.fft.fft2(pixels.float(), dim=(-2, -1), norm="ortho")
         masks = self._radial_masks(height, width, pixels.device)
-        components = []
-        for mask in masks:
-            component = torch.fft.ifft2(
-                spectrum * mask[None, None], dim=(-2, -1), norm="ortho"
-            ).real
-            components.append(component)
-        return torch.stack(components, dim=1)
+
+        def split_with_chunk_size(chunk_size: int) -> torch.Tensor:
+            output_chunks = []
+            for pixel_chunk in torch.split(pixels, chunk_size, dim=0):
+                # FFT on fp16 tensors is restricted for some CUDA sizes (e.g.
+                # 224), so always decompose in fp32. Chunking also avoids
+                # fragile, high-workspace cuFFT plans on older CUDA stacks.
+                spectrum = torch.fft.fft2(
+                    pixel_chunk.float(), dim=(-2, -1), norm="ortho"
+                )
+                band_chunks = []
+                for mask in masks:
+                    component = torch.fft.ifft2(
+                        spectrum * mask[None, None], dim=(-2, -1), norm="ortho"
+                    ).real
+                    band_chunks.append(component)
+                output_chunks.append(torch.stack(band_chunks, dim=1))
+            return torch.cat(output_chunks, dim=0)
+
+        try:
+            return split_with_chunk_size(self.fft_batch_size)
+        except RuntimeError as error:
+            is_cufft_error = pixels.is_cuda and "CUFFT" in str(error).upper()
+            if not is_cufft_error or self.fft_batch_size == 1:
+                raise
+            # A failed large cuFFT plan can remain cached. Clear it and retry
+            # sample-by-sample, which uses the smallest possible plan.
+            torch.backends.cuda.cufft_plan_cache.clear()
+            torch.cuda.empty_cache()
+            try:
+                return split_with_chunk_size(1)
+            except RuntimeError as retry_error:
+                if "CUFFT" not in str(retry_error).upper():
+                    raise
+                raise RuntimeError(
+                    "cuFFT failed even with FFT_BATCH_SIZE=1. Check that the "
+                    "NVIDIA driver matches the CUDA runtime used by PyTorch, "
+                    "or run the frequency decomposer on CPU."
+                ) from retry_error
 
     def forward(self, normalized_images: torch.Tensor) -> torch.Tensor:
         """Create normalized, image-like inputs for each frequency band."""

@@ -25,6 +25,18 @@ class FrequencyModuleTest(unittest.TestCase):
             torch.allclose(components.sum(dim=1), pixels, atol=2e-5, rtol=1e-5)
         )
 
+    def test_chunked_fft_matches_single_sample_fft(self):
+        torch.manual_seed(11)
+        pixels = torch.rand(5, 3, 16, 16)
+        chunked = RadialFrequencyDecomposer(
+            0.2, 0.55, fft_batch_size=3
+        ).split_pixels(pixels)
+        single = RadialFrequencyDecomposer(
+            0.2, 0.55, fft_batch_size=1
+        ).split_pixels(pixels)
+
+        self.assertTrue(torch.allclose(chunked, single, atol=1e-6, rtol=1e-6))
+
 
     def test_frequency_clip_inputs_are_finite_and_keep_shape(self):
         torch.manual_seed(2)

@@ -39,6 +39,8 @@ TRAINER:
       LOW_CUTOFF: 0.18
       HIGH_CUTOFF: 0.45
       CENTER_RESIDUAL_BANDS: True
+      # Keep cuFFT plans small; use 1 on older CUDA/driver combinations.
+      FFT_BATCH_SIZE: 8
 
       # Semantic correction is uncertainty-aware and agreement-gated.
       SEMANTIC_WEIGHT: 0.25

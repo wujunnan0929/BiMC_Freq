@@ -75,6 +75,8 @@ Important ablations can be configured in
 - `ADAPTIVE_FUSION: False` uses the fixed `BAND_PRIOR` instead of class-adaptive
   band weights.
 - `LOW_CUTOFF` and `HIGH_CUTOFF` control the radial FFT bands.
+- `FFT_BATCH_SIZE` only controls internal FFT chunking (not the dataloader
+  batch size). Reduce it to `1` if an older CUDA stack reports a cuFFT error.
 
 The direct implementation evaluates four frozen CLIP image encodings per
 sample (original plus three bands), trading runtime for a clean experimental
