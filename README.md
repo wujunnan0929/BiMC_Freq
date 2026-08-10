@@ -46,6 +46,40 @@ python main.py --data_cfg ./configs/datasets/cub200.yaml --train_cfg ./configs/t
 python main.py --data_cfg ./configs/datasets/cub200.yaml --train_cfg ./configs/trainers/bimc_ensemble.yaml
 ~~~
 
+## Frequency-aware prototype calibration
+
+The frequency experiment is a training-free extension of BiMC. It decomposes
+each normalized image into low-, middle-, and high-frequency inputs, builds a
+visual prototype for every class and band, and aligns them with three semantic
+prompts describing global shape, part structure, and local texture. It also
+routes the existing `GPT_PATH` class descriptions into the three bands with
+configurable semantic keywords, falling back to all class descriptions when a
+band has no keyword match. Semantic calibration is gated by visual-text
+agreement and prototype uncertainty. The three bands are then fused with
+class-adaptive weights.
+
+~~~BASH
+# Replace the dataset config with cub200.yaml or miniimagenet.yaml as needed.
+python main.py --data_cfg ./configs/datasets/cifar100.yaml --train_cfg ./configs/trainers/bimc_frequency.yaml
+~~~
+
+Important ablations can be configured in
+`configs/trainers/bimc_frequency.yaml`:
+
+- `FREQ_ALPHA: 0.0` disables the frequency prediction branch while retaining
+  the original BiMC path.
+- `SEMANTIC_WEIGHT: 0.0` keeps frequency visual prototypes but removes their
+  semantic calibration.
+- `DESCRIPTION_WEIGHT: 0.0` uses only the structured frequency prompts;
+  `1.0` uses only frequency-routed GPT descriptions.
+- `ADAPTIVE_FUSION: False` uses the fixed `BAND_PRIOR` instead of class-adaptive
+  band weights.
+- `LOW_CUTOFF` and `HIGH_CUTOFF` control the radial FFT bands.
+
+The direct implementation evaluates four frozen CLIP image encodings per
+sample (original plus three bands), trading runtime for a clean experimental
+isolation of the frequency contribution.
+
 ## Acknowledgment
 
 In this repository, we build our code based on the following excellent open-source projects. We sincerely thank all the authors for sharing their great work:

@@ -1,0 +1,68 @@
+SEED: 1
+
+DEVICE:
+  DEVICE_NAME: "cuda"
+  GPU_ID: "0;"
+
+DATALOADER:
+  TRAIN:
+    BATCH_SIZE_BASE: 64
+    BATCH_SIZE_INC: 64
+  TEST:
+    BATCH_SIZE: 100
+  NUM_WORKERS: 4
+
+MODEL:
+  BACKBONE:
+    NAME: "ViT-B/16"
+
+TRAINER:
+  BiMC:
+    PREC: "fp16"
+
+    VISION_CALIBRATION: True
+    LAMBDA_I: 0.1
+    TAU: 16
+
+    TEXT_CALIBRATION: True
+    LAMBDA_T: 0.5
+
+    GAMMA_BASE: 1.0
+    GAMMA_INC: 5.0
+
+    USING_ENSEMBLE: False
+
+    FREQUENCY:
+      ENABLED: True
+
+      # Normalized radial FFT cutoffs: [0, LOW], (LOW, HIGH], (HIGH, 1].
+      LOW_CUTOFF: 0.18
+      HIGH_CUTOFF: 0.45
+      CENTER_RESIDUAL_BANDS: True
+
+      # Semantic correction is uncertainty-aware and agreement-gated.
+      SEMANTIC_WEIGHT: 0.25
+      MAX_SEMANTIC_WEIGHT: 0.65
+      # Mix structured prompts with band-specific descriptions mined from GPT_PATH.
+      DESCRIPTION_WEIGHT: 0.5
+      UNCERTAINTY_SCALE: 2.0
+
+      # Class-adaptive low/middle/high frequency fusion.
+      ALIGNMENT_SCALE: 4.0
+      FUSION_TEMPERATURE: 1.0
+      ADAPTIVE_FUSION: True
+      BAND_PRIOR: [1.0, 1.0, 1.0]
+
+      # Probability interpolation between original BiMC and frequency branch.
+      FREQ_ALPHA: 0.35
+
+      PROMPTS:
+        - "a photo of a {}, emphasizing its global shape, silhouette, and coarse spatial layout."
+        - "a photo of a {}, emphasizing its parts, spatial structure, and medium-scale patterns."
+        - "a photo of a {}, emphasizing its fine texture, edges, colors, and local details."
+
+      # Keywords softly route the existing class descriptions to semantic bands.
+      # If a band has no match, all descriptions of that class are used.
+      LOW_KEYWORDS: ["shape", "silhouette", "overall", "body", "size", "large", "small", "long", "round"]
+      MIDDLE_KEYWORDS: ["part", "head", "wing", "tail", "leg", "beak", "spatial", "structure"]
+      HIGH_KEYWORDS: ["texture", "pattern", "stripe", "spot", "color", "edge", "feather", "fur", "detail"]

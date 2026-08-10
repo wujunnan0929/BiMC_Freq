@@ -1,3 +1,5 @@
 __pycache__/
 *.py[cod]
 .vscode/
+outputs/
+.codex_tmp

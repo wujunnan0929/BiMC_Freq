@@ -47,6 +47,18 @@ class Runner:
             'images_features', 
             'images_targets'
         ]
+        if self.cfg.TRAINER.BiMC.FREQUENCY.ENABLED:
+            keys_to_merge.extend([
+                'frequency_image_proto',
+                'frequency_prompt_proto',
+                'frequency_description_proto',
+                'frequency_semantic_proto',
+                'frequency_calibrated_proto',
+                'frequency_uncertainty',
+                'frequency_band_weights',
+                'frequency_semantic_gates',
+                'frequency_alignment',
+            ])
 
         for key in keys_to_merge:
             result[key] = torch.cat([d[key] for d in dict_list], dim=0)
@@ -119,6 +131,8 @@ class Runner:
         description_proto = state_dict['description_proto']
         description_features = state_dict['description_features']
         description_targets = state_dict['description_targets']
+        frequency_proto = state_dict.get('frequency_calibrated_proto')
+        frequency_band_weights = state_dict.get('frequency_band_weights')
 
         num_base_class = len(self.data_manager.class_index_in_task[0])
         num_accumulated_class = max(self.data_manager.class_index_in_task[task_id]) + 1
@@ -136,7 +150,9 @@ class Runner:
                                                    description_features, 
                                                    description_targets,
                                                    text_features,
-                                                   beta=beta)
+                                                   beta=beta,
+                                                   frequency_proto=frequency_proto,
+                                                   frequency_band_weights=frequency_band_weights)
 
             all_logits.append(logits)
             all_targets.append(targets)

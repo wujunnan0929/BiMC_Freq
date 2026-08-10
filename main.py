@@ -70,6 +70,37 @@ def extend_cfg(cfg):
     cfg.TRAINER.BiMC.GAMMA_INC = -1.0
     cfg.TRAINER.BiMC.USING_ENSEMBLE = False
 
+    # Training-free frequency-aware prototype calibration. The default is off
+    # so existing BiMC configuration files reproduce the original method.
+    cfg.TRAINER.BiMC.FREQUENCY = CN()
+    cfg.TRAINER.BiMC.FREQUENCY.ENABLED = False
+    cfg.TRAINER.BiMC.FREQUENCY.LOW_CUTOFF = 0.18
+    cfg.TRAINER.BiMC.FREQUENCY.HIGH_CUTOFF = 0.45
+    cfg.TRAINER.BiMC.FREQUENCY.CENTER_RESIDUAL_BANDS = True
+    cfg.TRAINER.BiMC.FREQUENCY.SEMANTIC_WEIGHT = 0.25
+    cfg.TRAINER.BiMC.FREQUENCY.MAX_SEMANTIC_WEIGHT = 0.65
+    cfg.TRAINER.BiMC.FREQUENCY.DESCRIPTION_WEIGHT = 0.5
+    cfg.TRAINER.BiMC.FREQUENCY.UNCERTAINTY_SCALE = 2.0
+    cfg.TRAINER.BiMC.FREQUENCY.ALIGNMENT_SCALE = 4.0
+    cfg.TRAINER.BiMC.FREQUENCY.FUSION_TEMPERATURE = 1.0
+    cfg.TRAINER.BiMC.FREQUENCY.ADAPTIVE_FUSION = True
+    cfg.TRAINER.BiMC.FREQUENCY.BAND_PRIOR = [1.0, 1.0, 1.0]
+    cfg.TRAINER.BiMC.FREQUENCY.FREQ_ALPHA = 0.35
+    cfg.TRAINER.BiMC.FREQUENCY.PROMPTS = [
+        "a photo of a {}, emphasizing its global shape, silhouette, and coarse spatial layout.",
+        "a photo of a {}, emphasizing its parts, spatial structure, and medium-scale patterns.",
+        "a photo of a {}, emphasizing its fine texture, edges, colors, and local details.",
+    ]
+    cfg.TRAINER.BiMC.FREQUENCY.LOW_KEYWORDS = [
+        "shape", "silhouette", "overall", "body", "size", "large", "small", "long", "round",
+    ]
+    cfg.TRAINER.BiMC.FREQUENCY.MIDDLE_KEYWORDS = [
+        "part", "head", "wing", "tail", "leg", "beak", "spatial", "structure",
+    ]
+    cfg.TRAINER.BiMC.FREQUENCY.HIGH_KEYWORDS = [
+        "texture", "pattern", "stripe", "spot", "color", "edge", "feather", "fur", "detail",
+    ]
+
 
 
     
