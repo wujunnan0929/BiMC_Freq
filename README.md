@@ -100,6 +100,82 @@ frequency alpha from visual-semantic agreement, prototype compactness, and
 support-set size. `FREQ_ALPHA` is the maximum rather than a fixed coefficient
 when `RELIABILITY_ALPHA` is enabled.
 
+#### CUB-200 explicit frequency descriptions
+
+`tools/generate_cub200_frequency_descriptions.py` generates five explicit
+low/middle/high candidates per class through an OpenAI-compatible
+`/chat/completions` endpoint. It validates visual-only content and JSON shape,
+checkpoints after every batch, and resumes from the existing output file.
+Run these PowerShell commands from the repository root:
+
+~~~POWERSHELL
+# Inspect the exact request without making a network call.
+python tools/generate_cub200_frequency_descriptions.py --dry-run --limit 2
+
+# Configure any OpenAI-compatible endpoint.
+$env:LLM_API_BASE = "https://your-endpoint.example/v1"
+$env:LLM_API_KEY = "your-api-key"
+$env:LLM_MODEL = "your-model-name"
+$env:LLM_REASONING_EFFORT = "xhigh"
+
+# Optional 10-class smoke generation, followed by a resumable full run.
+python tools/generate_cub200_frequency_descriptions.py --limit 10
+python tools/generate_cub200_frequency_descriptions.py
+
+# Require all 200 classes and every description to pass schema/content checks.
+python tools/generate_cub200_frequency_descriptions.py --validate-only
+~~~
+
+If an endpoint does not support `response_format={"type":"json_object"}`, add
+`--disable-json-mode`. Delete an invalid partial output or pass `--overwrite`
+to regenerate it deliberately.
+
+After generation, enable explicit descriptions and support-set Top-K grounding:
+
+~~~BASH
+python main.py --data_cfg ./configs/datasets/cub200.yaml --train_cfg ./configs/trainers/bimc_frequency_v2.yaml --opts TRAINER.BiMC.FREQUENCY.FFT_DEVICE cpu TRAINER.BiMC.FREQUENCY.USE_EXPLICIT_DESCRIPTIONS True TRAINER.BiMC.FREQUENCY.EXPLICIT_DESCRIPTION_PATH "./description/cub200_frequency_descriptions.json" TRAINER.BiMC.FREQUENCY.DESCRIPTION_TOPK 3 TRAINER.BiMC.FREQUENCY.DESCRIPTION_TEMPERATURE 0.07
+~~~
+
+The original flat CUB descriptions remain active in the original BiMC path.
+Only the frequency branch switches from keyword routing to the explicit file.
+Set `DESCRIPTION_WEIGHT` to `0.0`, `0.5`, or `1.0` for structured-only,
+mixed, or explicit-description-only semantic ablations.
+
+#### DeepSeek V4-Pro generator
+
+The separate DeepSeek entry point uses the official OpenAI-format endpoint,
+V4-Pro thinking mode, and `reasoning_effort=max` by default. It reads only
+`DEEPSEEK_*` variables, so an OpenAI key cannot be sent to DeepSeek by mistake.
+
+Create an ignored local file named `tools/deepseek_config.local.ps1`:
+
+~~~POWERSHELL
+$env:DEEPSEEK_API_KEY = "your-deepseek-api-key"
+$env:DEEPSEEK_API_BASE = "https://api.deepseek.com"
+$env:DEEPSEEK_MODEL = "deepseek-v4-pro"
+$env:DEEPSEEK_REASONING_EFFORT = "max"
+# Optional robustness overrides; these are already the script defaults.
+$env:DEEPSEEK_BATCH_SIZE = "5"
+$env:DEEPSEEK_MAX_OUTPUT_TOKENS = "32768"
+$env:DEEPSEEK_MAX_RETRIES = "8"
+$env:DEEPSEEK_TIMEOUT = "300"
+~~~
+
+Load it and generate a smoke batch, then resume the complete dataset:
+
+~~~POWERSHELL
+. .\tools\deepseek_config.local.ps1
+python tools/generate_cub200_frequency_descriptions_deepseek.py --limit 10
+python tools/generate_cub200_frequency_descriptions_deepseek.py
+python tools/generate_cub200_frequency_descriptions_deepseek.py --validate-only
+~~~
+
+DeepSeek output is kept separate at
+`description/cub200_frequency_descriptions_deepseek.json`. To use it in BiMC,
+set `EXPLICIT_DESCRIPTION_PATH` to that file. Use `--model
+deepseek-v4-flash` for the lower-cost V4 variant, or `--reasoning-effort none`
+to disable thinking mode.
+
 ~~~BASH
 # Main V2 experiment. Use FFT_DEVICE cpu on a server with broken cuFFT.
 python main.py \

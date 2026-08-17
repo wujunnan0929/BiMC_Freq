@@ -11,6 +11,7 @@ from models.frequency import (
     compute_frequency_prototypes,
     mix_frequency_probabilities,
     route_description_embeddings,
+    select_frequency_description_prototypes,
 )
 
 
@@ -140,6 +141,38 @@ class FrequencyModuleTest(unittest.TestCase):
         self.assertTrue(torch.allclose(routed[2], torch.tensor([0.0, 1.0, 0.0])))
         expected_fallback = F.normalize(torch.ones(3), dim=0)
         self.assertTrue(torch.allclose(routed[1], expected_fallback))
+
+
+    def test_explicit_descriptions_are_selected_by_visual_alignment(self):
+        visual = F.normalize(
+            torch.tensor(
+                [[[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]]
+            ),
+            dim=-1,
+        )
+        candidates = F.normalize(
+            torch.tensor(
+                [[
+                    [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]],
+                    [[0.0, 1.0], [1.0, 0.0], [0.0, -1.0]],
+                    [[1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]],
+                ]]
+            ),
+            dim=-1,
+        )
+
+        semantic, scores, indices = select_frequency_description_prototypes(
+            candidates, visual, top_k=2, temperature=0.07
+        )
+
+        self.assertEqual(semantic.shape, (1, 3, 2))
+        self.assertEqual(scores.shape, (1, 3, 2))
+        self.assertEqual(indices.shape, (1, 3, 2))
+        self.assertTrue(torch.equal(indices[..., 0], torch.zeros(1, 3, dtype=torch.long)))
+        self.assertTrue(
+            torch.allclose(semantic.norm(dim=-1), torch.ones(1, 3), atol=1e-6)
+        )
+        self.assertTrue(torch.all(scores[..., 0] > scores[..., 1]))
 
 
     def test_semantic_calibration_is_agreement_gated_and_normalized(self):

@@ -51,6 +51,12 @@ TRAINER:
       # Suppress semantic correction for uncertain frequency prototypes.
       SEMANTIC_GATE_MODE: "attenuate"
       DESCRIPTION_WEIGHT: 0.5
+      # Explicit descriptions are generated offline. Keep this disabled for
+      # the original keyword-routing baseline and enable it with --opts.
+      USE_EXPLICIT_DESCRIPTIONS: False
+      EXPLICIT_DESCRIPTION_PATH: ""
+      DESCRIPTION_TOPK: 3
+      DESCRIPTION_TEMPERATURE: 0.07
       UNCERTAINTY_SCALE: 2.0
 
       ALIGNMENT_SCALE: 4.0

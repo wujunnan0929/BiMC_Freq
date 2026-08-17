@@ -12,6 +12,7 @@ from models.frequency import (
     compute_frequency_prototypes,
     mix_frequency_probabilities,
     route_description_embeddings,
+    select_frequency_description_prototypes,
 )
 
 def load_clip_to_cpu(cfg):
@@ -64,6 +65,18 @@ class BiMC(nn.Module):
                 raise ValueError("FREQ_ALPHA must lie in [0, 1].")
             if not 0.0 <= frequency_cfg.DESCRIPTION_WEIGHT <= 1.0:
                 raise ValueError("DESCRIPTION_WEIGHT must lie in [0, 1].")
+            if frequency_cfg.DESCRIPTION_TOPK <= 0:
+                raise ValueError("DESCRIPTION_TOPK must be positive.")
+            if frequency_cfg.DESCRIPTION_TEMPERATURE <= 0.0:
+                raise ValueError("DESCRIPTION_TEMPERATURE must be positive.")
+            if (
+                frequency_cfg.USE_EXPLICIT_DESCRIPTIONS
+                and not frequency_cfg.EXPLICIT_DESCRIPTION_PATH
+            ):
+                raise ValueError(
+                    "EXPLICIT_DESCRIPTION_PATH is required when explicit "
+                    "frequency descriptions are enabled."
+                )
             self.frequency_decomposer = RadialFrequencyDecomposer(
                 low_cutoff=frequency_cfg.LOW_CUTOFF,
                 high_cutoff=frequency_cfg.HIGH_CUTOFF,
@@ -113,6 +126,96 @@ class BiMC(nn.Module):
             tokens = clip.tokenize(texts).to(self.device)
             embeddings = self.clip_model.encode_text(tokens)
             class_embeddings.append(F.normalize(embeddings, dim=-1))
+        return torch.stack(class_embeddings, dim=0)
+
+
+    @staticmethod
+    def _normalize_description_key(name):
+        return " ".join(
+            str(name).lower().replace('_', ' ').replace('-', ' ').split()
+        )
+
+
+    @torch.no_grad()
+    def inference_explicit_frequency_description_candidates(
+        self, class_names, description_path
+    ):
+        """Encode explicit CUB-style descriptions as ``[C, B, K, D]``."""
+        try:
+            with open(description_path, "r", encoding="utf-8") as file:
+                prompt_dict = json.load(file)
+        except FileNotFoundError as error:
+            raise FileNotFoundError(
+                "Explicit frequency description file was not found: {}. "
+                "Run tools/generate_cub200_frequency_descriptions.py first."
+                .format(description_path)
+            ) from error
+        if not isinstance(prompt_dict, dict) or not prompt_dict:
+            raise ValueError(
+                "Explicit frequency descriptions must be a non-empty JSON object."
+            )
+
+        normalized_prompts = {}
+        for key, value in prompt_dict.items():
+            normalized_key = self._normalize_description_key(key)
+            if normalized_key in normalized_prompts:
+                raise ValueError(
+                    "Duplicate normalized class key in explicit descriptions: {}"
+                    .format(key)
+                )
+            normalized_prompts[normalized_key] = value
+
+        band_names = ("low", "middle", "high")
+        class_embeddings = []
+        expected_candidates = None
+        for classname in class_names:
+            normalized_key = self._normalize_description_key(classname)
+            if normalized_key not in normalized_prompts:
+                raise KeyError(
+                    "Missing explicit frequency descriptions for class: {}"
+                    .format(classname)
+                )
+            class_prompts = normalized_prompts[normalized_key]
+            if not isinstance(class_prompts, dict) or set(class_prompts) != set(
+                band_names
+            ):
+                raise ValueError(
+                    "Class {} must contain exactly low, middle, and high lists."
+                    .format(classname)
+                )
+
+            band_embeddings = []
+            for band_name in band_names:
+                descriptions = class_prompts[band_name]
+                if (
+                    not isinstance(descriptions, list)
+                    or not descriptions
+                    or not all(
+                        isinstance(description, str) and description.strip()
+                        for description in descriptions
+                    )
+                ):
+                    raise ValueError(
+                        "Descriptions for {}/{} must be a non-empty string list."
+                        .format(classname, band_name)
+                    )
+                if expected_candidates is None:
+                    expected_candidates = len(descriptions)
+                elif len(descriptions) != expected_candidates:
+                    raise ValueError(
+                        "All class/band entries must have the same number of "
+                        "candidates; {}/{} has {}, expected {}."
+                        .format(
+                            classname,
+                            band_name,
+                            len(descriptions),
+                            expected_candidates,
+                        )
+                    )
+                tokens = clip.tokenize(descriptions).to(self.device)
+                embeddings = self.clip_model.encode_text(tokens)
+                band_embeddings.append(F.normalize(embeddings, dim=-1))
+            class_embeddings.append(torch.stack(band_embeddings, dim=0))
         return torch.stack(class_embeddings, dim=0)
 
 
@@ -198,7 +301,10 @@ class BiMC(nn.Module):
             mean_embeddings.append(text_features.mean(0).unsqueeze(0))
             description_embeddings.append(text_features)
             all_targets.append(targets)
-            if self.frequency_enabled:
+            if (
+                self.frequency_enabled
+                and not self.cfg.TRAINER.BiMC.FREQUENCY.USE_EXPLICIT_DESCRIPTIONS
+            ):
                 frequency_cfg = self.cfg.TRAINER.BiMC.FREQUENCY
                 keyword_groups = (
                     frequency_cfg.LOW_KEYWORDS,
@@ -214,7 +320,10 @@ class BiMC(nn.Module):
         all_targets = torch.cat(all_targets, dim=0)
         mean_embeddings = torch.cat(mean_embeddings, dim=0)
         mean_embeddings = F.normalize(mean_embeddings, dim=-1)
-        if self.frequency_enabled:
+        if (
+            self.frequency_enabled
+            and not self.cfg.TRAINER.BiMC.FREQUENCY.USE_EXPLICIT_DESCRIPTIONS
+        ):
             frequency_description_embeddings = torch.stack(
                 frequency_description_embeddings, dim=0
             )
@@ -283,6 +392,9 @@ class BiMC(nn.Module):
         ) = self.inference_all_img_feature(
             loader, cls_begin_index, class_index=class_index
         )
+        # Explicit prompt selection must use only the current session's raw
+        # support-set prototypes, before optional novel-to-base calibration.
+        frequency_grounding_proto = frequency_image_proto
 
         if cls_begin_index != 0:
             if calibrate_novel_vision_proto:
@@ -311,6 +423,30 @@ class BiMC(nn.Module):
         if self.frequency_enabled:
             frequency_cfg = self.cfg.TRAINER.BiMC.FREQUENCY
             frequency_prompt_proto = self.inference_frequency_text_feature(class_names)
+            if frequency_cfg.USE_EXPLICIT_DESCRIPTIONS:
+                frequency_description_candidates = (
+                    self.inference_explicit_frequency_description_candidates(
+                        class_names,
+                        frequency_cfg.EXPLICIT_DESCRIPTION_PATH,
+                    )
+                )
+                (
+                    frequency_description_proto,
+                    selected_description_scores,
+                    selected_description_indices,
+                ) = select_frequency_description_prototypes(
+                    text_candidates=frequency_description_candidates,
+                    visual_prototypes=frequency_grounding_proto,
+                    top_k=frequency_cfg.DESCRIPTION_TOPK,
+                    temperature=frequency_cfg.DESCRIPTION_TEMPERATURE,
+                )
+                print(
+                    'explicit frequency descriptions: top-k={}, '
+                    'mean selected similarity={:.3f}'.format(
+                        selected_description_indices.shape[-1],
+                        selected_description_scores.float().mean().item(),
+                    )
+                )
             description_weight = frequency_cfg.DESCRIPTION_WEIGHT
             frequency_semantic_proto = F.normalize(
                 (1.0 - description_weight) * frequency_prompt_proto

@@ -3,3 +3,4 @@ __pycache__/
 .vscode/
 outputs/
 .codex_tmp
+tools/*.local.ps1

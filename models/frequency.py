@@ -262,6 +262,61 @@ def route_description_embeddings(
     return torch.stack(band_embeddings, dim=0)
 
 
+def select_frequency_description_prototypes(
+    text_candidates: torch.Tensor,
+    visual_prototypes: torch.Tensor,
+    top_k: int = 3,
+    temperature: float = 0.07,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Ground explicit frequency descriptions with support-set prototypes.
+
+    Args:
+        text_candidates: Normalized or unnormalized text features with shape
+            ``[C, B, K, D]``.
+        visual_prototypes: Support-set visual prototypes with shape
+            ``[C, B, D]``.
+        top_k: Number of visually aligned descriptions retained per class and
+            band. Values larger than the available candidate count retain all
+            candidates.
+        temperature: Softmax temperature used to combine the selected text
+            features.
+
+    Returns:
+        The grounded semantic prototype ``[C, B, D]``, selected similarities
+        ``[C, B, top_k]``, and selected candidate indices
+        ``[C, B, top_k]``.
+    """
+    if text_candidates.ndim != 4:
+        raise ValueError("Text candidates must have shape [C, B, K, D].")
+    if visual_prototypes.ndim != 3:
+        raise ValueError("Visual prototypes must have shape [C, B, D].")
+    if text_candidates.shape[:2] != visual_prototypes.shape[:2]:
+        raise ValueError("Text and visual class/band dimensions must match.")
+    if text_candidates.shape[-1] != visual_prototypes.shape[-1]:
+        raise ValueError("Text and visual feature dimensions must match.")
+    if text_candidates.shape[2] == 0:
+        raise ValueError("At least one text candidate is required.")
+    if top_k <= 0:
+        raise ValueError("top_k must be positive.")
+    if temperature <= 0.0:
+        raise ValueError("Description temperature must be positive.")
+
+    text = F.normalize(text_candidates, dim=-1)
+    visual = F.normalize(visual_prototypes, dim=-1)
+    similarities = torch.einsum("cbkd,cbd->cbk", text, visual)
+    retained = min(int(top_k), text.shape[2])
+    top_scores, top_indices = similarities.topk(retained, dim=-1)
+    gather_indices = top_indices.unsqueeze(-1).expand(
+        -1, -1, -1, text.shape[-1]
+    )
+    selected = torch.gather(text, dim=2, index=gather_indices)
+    weights = torch.softmax(top_scores / temperature, dim=-1)
+    semantic = F.normalize(
+        torch.sum(weights.unsqueeze(-1) * selected, dim=2), dim=-1
+    )
+    return semantic, top_scores, top_indices
+
+
 def calibrate_frequency_prototypes(
     visual_prototypes: torch.Tensor,
     semantic_prototypes: torch.Tensor,
