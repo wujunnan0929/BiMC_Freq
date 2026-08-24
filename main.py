@@ -70,8 +70,9 @@ def extend_cfg(cfg):
     cfg.TRAINER.BiMC.GAMMA_INC = -1.0
     cfg.TRAINER.BiMC.USING_ENSEMBLE = False
 
-    # Training-free frequency-aware prototype calibration. The default is off
-    # so existing BiMC configuration files reproduce the original method.
+    # Frequency-aware prototype calibration.  The legacy path is training-free;
+    # an optional base-session residual router can be enabled below.  Frequency
+    # mode defaults to off so existing BiMC configs reproduce the original method.
     cfg.TRAINER.BiMC.FREQUENCY = CN()
     cfg.TRAINER.BiMC.FREQUENCY.ENABLED = False
     cfg.TRAINER.BiMC.FREQUENCY.LOW_CUTOFF = 0.18
@@ -101,6 +102,30 @@ def extend_cfg(cfg):
     cfg.TRAINER.BiMC.FREQUENCY.RELIABILITY_UNCERTAINTY_SCALE = 2.0
     cfg.TRAINER.BiMC.FREQUENCY.RELIABILITY_SHOT_TAU = 5.0
     cfg.TRAINER.BiMC.FREQUENCY.RELIABILITY_POWER = 1.0
+    # Optional base-session meta-trained residual router.  Shared parameters
+    # are frozen after base training; incremental sessions only add class
+    # statistics, preserving FSCIL stability.
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER = CN()
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.ENABLED = False
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.HIDDEN_DIM = 64
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.DROPOUT = 0.1
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.NULL_LOGIT_BIAS = 2.0
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.TRAIN_STEPS = 400
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.EPISODE_WAY = 10
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.EPISODE_OLD_WAY = 5
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.OLD_SHOT = 20
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.SHOT = 5
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.QUERY = 5
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.LR = 1e-3
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.WEIGHT_DECAY = 1e-4
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.ORACLE_TEMPERATURE = 0.2
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.ROUTE_LOSS_WEIGHT = 0.5
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.SAFE_KL_WEIGHT = 0.2
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.NOVEL_LOSS_WEIGHT = 0.5
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.MAX_ALPHA = 0.75
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.USE_CLASS_ALPHA = False
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.GRAD_CLIP = 5.0
+    cfg.TRAINER.BiMC.FREQUENCY.ROUTER.LOG_INTERVAL = 100
     cfg.TRAINER.BiMC.FREQUENCY.PROMPTS = [
         "a photo of a {}, emphasizing its global shape, silhouette, and coarse spatial layout.",
         "a photo of a {}, emphasizing its parts, spatial structure, and medium-scale patterns.",

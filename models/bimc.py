@@ -7,12 +7,18 @@ import json
 from models.frequency import (
     RadialFrequencyDecomposer,
     calibrate_frequency_prototypes,
+    compute_frequency_band_logits,
     compute_frequency_class_alpha,
     compute_frequency_logits,
     compute_frequency_prototypes,
     mix_frequency_probabilities,
     route_description_embeddings,
     select_frequency_description_prototypes,
+)
+from models.frequency_router import (
+    TrainableFrequencyRouter,
+    residual_frequency_fusion,
+    sample_pseudo_fscil_episode,
 )
 
 def load_clip_to_cpu(cfg):
@@ -55,6 +61,7 @@ class BiMC(nn.Module):
         self.vision_proto = None
         self.frequency_enabled = cfg.TRAINER.BiMC.FREQUENCY.ENABLED
         self.frequency_decomposer = None
+        self.frequency_router = None
         if self.frequency_enabled:
             frequency_cfg = cfg.TRAINER.BiMC.FREQUENCY
             if len(frequency_cfg.PROMPTS) != 3:
@@ -86,6 +93,42 @@ class BiMC(nn.Module):
                 view_mode=frequency_cfg.VIEW_MODE,
                 high_enhance=frequency_cfg.HIGH_ENHANCE,
             ).to(self.device)
+            router_cfg = frequency_cfg.ROUTER
+            if router_cfg.ENABLED:
+                if router_cfg.TRAIN_STEPS <= 0:
+                    raise ValueError("Router TRAIN_STEPS must be positive.")
+                if router_cfg.EPISODE_WAY < 2:
+                    raise ValueError("Router EPISODE_WAY must be at least two.")
+                if not 0 <= router_cfg.EPISODE_OLD_WAY <= router_cfg.EPISODE_WAY:
+                    raise ValueError(
+                        "Router EPISODE_OLD_WAY must lie in [0, EPISODE_WAY]."
+                    )
+                if router_cfg.OLD_SHOT <= 0:
+                    raise ValueError("Router OLD_SHOT must be positive.")
+                if router_cfg.SHOT <= 0 or router_cfg.QUERY <= 0:
+                    raise ValueError("Router SHOT and QUERY must be positive.")
+                if router_cfg.LR <= 0.0:
+                    raise ValueError("Router learning rate must be positive.")
+                if router_cfg.ORACLE_TEMPERATURE <= 0.0:
+                    raise ValueError(
+                        "Router ORACLE_TEMPERATURE must be positive."
+                    )
+                if router_cfg.LOG_INTERVAL <= 0:
+                    raise ValueError("Router LOG_INTERVAL must be positive.")
+                if (
+                    router_cfg.ROUTE_LOSS_WEIGHT < 0.0
+                    or router_cfg.SAFE_KL_WEIGHT < 0.0
+                    or router_cfg.NOVEL_LOSS_WEIGHT < 0.0
+                ):
+                    raise ValueError("Router loss weights must be non-negative.")
+                if not 0.0 <= router_cfg.MAX_ALPHA <= 1.0:
+                    raise ValueError("Router MAX_ALPHA must lie in [0, 1].")
+                self.frequency_router = TrainableFrequencyRouter(
+                    num_bands=self.frequency_decomposer.num_bands,
+                    hidden_dim=router_cfg.HIDDEN_DIM,
+                    dropout=router_cfg.DROPOUT,
+                    null_logit_bias=router_cfg.NULL_LOGIT_BIAS,
+                ).to(self.device)
 
 
     @torch.no_grad()
@@ -253,7 +296,15 @@ class BiMC(nn.Module):
         prototypes = F.normalize(prototypes, dim=-1)
 
         if not self.frequency_enabled:
-            return all_features, all_labels, prototypes, None, None, None
+            return (
+                all_features,
+                all_labels,
+                prototypes,
+                None,
+                None,
+                None,
+                None,
+            )
 
         all_frequency_features = torch.cat(all_frequency_features, dim=0)
         (
@@ -273,6 +324,7 @@ class BiMC(nn.Module):
             frequency_prototypes,
             frequency_uncertainty,
             frequency_sample_counts,
+            all_frequency_features,
         )
 
 
@@ -349,6 +401,300 @@ class BiMC(nn.Module):
         updated_protos = (1 - shift_weight) * cur_protos + shift_weight * delta_protos
         updated_protos = F.normalize(updated_protos, dim=-1)
         return updated_protos
+
+
+    def fit_frequency_router(
+        self,
+        image_features,
+        frequency_features,
+        labels,
+        class_index,
+        text_features,
+        description_proto,
+        frequency_semantic_proto,
+    ):
+        """Meta-train the residual router on pseudo FSCIL base episodes.
+
+        The CLIP encoders and all prototypes are treated as frozen feature
+        generators.  Only the small router MLP receives gradients.  Each
+        episode contains pseudo-old classes with more support samples and
+        pseudo-novel classes with the configured few-shot support size.
+        """
+        if self.frequency_router is None:
+            return
+        if frequency_features is None:
+            raise ValueError("Router training requires per-image frequency features.")
+
+        router_cfg = self.cfg.TRAINER.BiMC.FREQUENCY.ROUTER
+        frequency_cfg = self.cfg.TRAINER.BiMC.FREQUENCY
+        class_ids = [int(class_id) for class_id in class_index]
+        if len(class_ids) < 2:
+            raise ValueError("Router training requires at least two base classes.")
+
+        # CLIP is frozen.  Detaching once prevents accidental graph retention
+        # and keeps the pseudo-episode loop inexpensive.
+        image_features = F.normalize(image_features.detach(), dim=-1)
+        frequency_features = F.normalize(
+            frequency_features.detach(), dim=-1
+        )
+        labels = labels.detach()
+        text_features = F.normalize(text_features.detach(), dim=-1)
+        description_proto = F.normalize(description_proto.detach(), dim=-1)
+        frequency_semantic_proto = F.normalize(
+            frequency_semantic_proto.detach(), dim=-1
+        )
+
+        optimizer = torch.optim.AdamW(
+            self.frequency_router.parameters(),
+            lr=router_cfg.LR,
+            weight_decay=router_cfg.WEIGHT_DECAY,
+        )
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(int(self.cfg.SEED) + 1701)
+        self.frequency_router.train()
+
+        lambda_t = (
+            self.cfg.TRAINER.BiMC.LAMBDA_T
+            if self.cfg.TRAINER.BiMC.TEXT_CALIBRATION
+            else 0.0
+        )
+        beta = self.cfg.DATASET.BETA
+        running_loss = 0.0
+        running_original_correct = 0
+        running_mixed_correct = 0
+        running_count = 0
+        running_router = None
+        running_steps = 0
+
+        print(
+            "train frequency residual router: steps={}, episode={} way "
+            "({} pseudo-old), old-shot={}, novel-shot={}, query={}".format(
+                router_cfg.TRAIN_STEPS,
+                router_cfg.EPISODE_WAY,
+                router_cfg.EPISODE_OLD_WAY,
+                router_cfg.OLD_SHOT,
+                router_cfg.SHOT,
+                router_cfg.QUERY,
+            )
+        )
+
+        for step in range(1, router_cfg.TRAIN_STEPS + 1):
+            (
+                selected_positions_cpu,
+                support_indices_cpu,
+                support_local_labels_cpu,
+                query_indices_cpu,
+                query_local_labels_cpu,
+            ) = sample_pseudo_fscil_episode(
+                labels=labels,
+                class_ids=class_ids,
+                way=router_cfg.EPISODE_WAY,
+                shot=router_cfg.SHOT,
+                query=router_cfg.QUERY,
+                generator=generator,
+                old_way=router_cfg.EPISODE_OLD_WAY,
+                old_shot=router_cfg.OLD_SHOT,
+            )
+
+            device = image_features.device
+            selected_positions = selected_positions_cpu.to(device)
+            support_indices = support_indices_cpu.to(device)
+            support_local_labels = support_local_labels_cpu.to(device)
+            query_indices = query_indices_cpu.to(device)
+            query_local_labels = query_local_labels_cpu.to(device)
+            episode_way = selected_positions.numel()
+
+            with torch.no_grad():
+                support_image = image_features[support_indices]
+                query_image = image_features[query_indices]
+                support_frequency = frequency_features[support_indices]
+                query_frequency = frequency_features[query_indices]
+
+                image_prototypes = []
+                for local_class in range(episode_way):
+                    class_support = support_image[
+                        support_local_labels == local_class
+                    ]
+                    image_prototypes.append(
+                        F.normalize(class_support.mean(dim=0), dim=-1)
+                    )
+                image_prototypes = torch.stack(image_prototypes, dim=0)
+
+                (
+                    frequency_prototypes,
+                    frequency_uncertainty,
+                ) = compute_frequency_prototypes(
+                    support_frequency,
+                    support_local_labels,
+                    class_index=range(episode_way),
+                )
+                semantic_prototypes = frequency_semantic_proto[
+                    selected_positions
+                ]
+                (
+                    calibrated_frequency_prototypes,
+                    episode_band_weights,
+                    _,
+                    _,
+                ) = calibrate_frequency_prototypes(
+                    visual_prototypes=frequency_prototypes,
+                    semantic_prototypes=semantic_prototypes,
+                    uncertainty=frequency_uncertainty,
+                    semantic_weight=frequency_cfg.SEMANTIC_WEIGHT,
+                    max_semantic_weight=frequency_cfg.MAX_SEMANTIC_WEIGHT,
+                    uncertainty_scale=frequency_cfg.UNCERTAINTY_SCALE,
+                    alignment_scale=frequency_cfg.ALIGNMENT_SCALE,
+                    fusion_temperature=frequency_cfg.FUSION_TEMPERATURE,
+                    adaptive_fusion=frequency_cfg.ADAPTIVE_FUSION,
+                    semantic_gate_mode=frequency_cfg.SEMANTIC_GATE_MODE,
+                    band_prior=torch.as_tensor(
+                        frequency_cfg.BAND_PRIOR,
+                        device=device,
+                        dtype=frequency_prototypes.dtype,
+                    ),
+                )
+
+                episode_text = text_features[selected_positions]
+                episode_description = description_proto[selected_positions]
+                fused_prototypes = beta * (
+                    (1.0 - lambda_t) * episode_text
+                    + lambda_t * episode_description
+                ) + (1.0 - beta) * image_prototypes
+                fused_prototypes = F.normalize(fused_prototypes, dim=-1)
+                original_logits = query_image @ fused_prototypes.t()
+                band_logits = compute_frequency_band_logits(
+                    query_frequency,
+                    calibrated_frequency_prototypes,
+                )
+
+                # The best expert is known only for base-session query labels.
+                # It supplies a soft routing target that can generalize to
+                # unlabeled real incremental queries.
+                expert_logits = torch.cat(
+                    (original_logits.unsqueeze(-1), band_logits), dim=-1
+                )
+                expert_log_probabilities = F.log_softmax(
+                    expert_logits.float(), dim=1
+                )
+                gather_labels = query_local_labels.view(-1, 1, 1).expand(
+                    -1, 1, expert_logits.shape[-1]
+                )
+                expert_losses = -torch.gather(
+                    expert_log_probabilities,
+                    dim=1,
+                    index=gather_labels,
+                ).squeeze(1)
+                oracle_router = F.softmax(
+                    -expert_losses / router_cfg.ORACLE_TEMPERATURE,
+                    dim=-1,
+                )
+
+            router_probabilities = self.frequency_router(
+                original_logits, band_logits
+            )
+            mixed_logits = residual_frequency_fusion(
+                original_logits=original_logits,
+                band_logits=band_logits,
+                router_probabilities=router_probabilities,
+                class_band_weights=episode_band_weights,
+                max_alpha=router_cfg.MAX_ALPHA,
+            )
+
+            classification_loss = F.cross_entropy(
+                mixed_logits, query_local_labels
+            )
+            novel_start = min(
+                int(router_cfg.EPISODE_OLD_WAY), episode_way
+            )
+            novel_mask = query_local_labels >= novel_start
+            if novel_start < episode_way and torch.any(novel_mask):
+                novel_loss = F.cross_entropy(
+                    mixed_logits[novel_mask], query_local_labels[novel_mask]
+                )
+            else:
+                novel_loss = mixed_logits.new_zeros(())
+            route_loss = F.kl_div(
+                router_probabilities.clamp_min(1e-8).log(),
+                oracle_router,
+                reduction="batchmean",
+            )
+
+            original_probabilities = F.softmax(
+                original_logits.float().detach(), dim=-1
+            )
+            safe_mask = (
+                original_logits.argmax(dim=-1) == query_local_labels
+            )
+            if torch.any(safe_mask):
+                safe_loss = F.kl_div(
+                    F.log_softmax(mixed_logits[safe_mask], dim=-1),
+                    original_probabilities[safe_mask],
+                    reduction="batchmean",
+                )
+            else:
+                safe_loss = mixed_logits.new_zeros(())
+
+            loss = (
+                classification_loss
+                + router_cfg.NOVEL_LOSS_WEIGHT * novel_loss
+                + router_cfg.ROUTE_LOSS_WEIGHT * route_loss
+                + router_cfg.SAFE_KL_WEIGHT * safe_loss
+            )
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            if router_cfg.GRAD_CLIP > 0.0:
+                torch.nn.utils.clip_grad_norm_(
+                    self.frequency_router.parameters(), router_cfg.GRAD_CLIP
+                )
+            optimizer.step()
+
+            with torch.no_grad():
+                running_loss += float(loss.item())
+                running_original_correct += int(
+                    (original_logits.argmax(dim=-1) == query_local_labels)
+                    .sum()
+                    .item()
+                )
+                running_mixed_correct += int(
+                    (mixed_logits.argmax(dim=-1) == query_local_labels)
+                    .sum()
+                    .item()
+                )
+                running_count += query_local_labels.numel()
+                running_steps += 1
+                mean_router = router_probabilities.mean(dim=0)
+                if running_router is None:
+                    running_router = mean_router
+                else:
+                    running_router = running_router + mean_router
+
+            should_log = (
+                step == 1
+                or step == router_cfg.TRAIN_STEPS
+                or step % router_cfg.LOG_INTERVAL == 0
+            )
+            if should_log:
+                weights = (running_router / running_steps).tolist()
+                print(
+                    "router step {}/{}: loss={:.4f}, original={:.2f}%, "
+                    "mixed={:.2f}%, weights(null/low/mid/high)={}".format(
+                        step,
+                        router_cfg.TRAIN_STEPS,
+                        running_loss / running_steps,
+                        100.0 * running_original_correct / running_count,
+                        100.0 * running_mixed_correct / running_count,
+                        ", ".join("{:.3f}".format(value) for value in weights),
+                    )
+                )
+                running_loss = 0.0
+                running_original_correct = 0
+                running_mixed_correct = 0
+                running_count = 0
+                running_router = None
+                running_steps = 0
+
+        self.frequency_router.eval()
+        print("frequency residual router training complete; shared router frozen")
     
 
     def build_task_statistics(self, class_names, loader,
@@ -389,6 +735,7 @@ class BiMC(nn.Module):
             frequency_image_proto,
             frequency_uncertainty,
             frequency_sample_counts,
+            all_frequency_features,
         ) = self.inference_all_img_feature(
             loader, cls_begin_index, class_index=class_index
         )
@@ -524,6 +871,16 @@ class BiMC(nn.Module):
                 'frequency_class_alpha': frequency_class_alpha,
                 'frequency_reliability': frequency_reliability,
             }
+            if cls_begin_index == 0 and self.frequency_router is not None:
+                self.fit_frequency_router(
+                    image_features=images_features,
+                    frequency_features=all_frequency_features,
+                    labels=images_targets,
+                    class_index=class_index,
+                    text_features=text_features,
+                    description_proto=description_proto,
+                    frequency_semantic_proto=frequency_semantic_proto,
+                )
 
 
         cov_images = torch.cov(images_features.T)
@@ -635,22 +992,45 @@ class BiMC(nn.Module):
                     "Frequency mode requires calibrated prototypes and band weights."
                 )
             frequency_features = self.extract_frequency_img_feature(images)
-            logits_frequency = compute_frequency_logits(
-                frequency_features,
-                frequency_proto,
-                frequency_band_weights,
-            )
-            prob_frequency = F.softmax(logits_frequency, dim=-1)
-            if frequency_class_alpha is None:
-                frequency_class_alpha = prob_frequency.new_full(
-                    (prob_frequency.shape[1],),
-                    self.cfg.TRAINER.BiMC.FREQUENCY.FREQ_ALPHA,
+            if self.frequency_router is not None:
+                band_logits = compute_frequency_band_logits(
+                    frequency_features, frequency_proto
                 )
-            prob_fused_proto = mix_frequency_probabilities(
-                prob_fused_proto,
-                prob_frequency,
-                frequency_class_alpha,
-            )
+                router_probabilities = self.frequency_router(
+                    logits_proto_fused, band_logits
+                )
+                router_cfg = self.cfg.TRAINER.BiMC.FREQUENCY.ROUTER
+                router_class_alpha = (
+                    frequency_class_alpha
+                    if router_cfg.USE_CLASS_ALPHA
+                    else None
+                )
+                routed_logits = residual_frequency_fusion(
+                    original_logits=logits_proto_fused,
+                    band_logits=band_logits,
+                    router_probabilities=router_probabilities,
+                    class_band_weights=frequency_band_weights,
+                    max_alpha=router_cfg.MAX_ALPHA,
+                    class_alpha=router_class_alpha,
+                )
+                prob_fused_proto = F.softmax(routed_logits, dim=-1)
+            else:
+                logits_frequency = compute_frequency_logits(
+                    frequency_features,
+                    frequency_proto,
+                    frequency_band_weights,
+                )
+                prob_frequency = F.softmax(logits_frequency, dim=-1)
+                if frequency_class_alpha is None:
+                    frequency_class_alpha = prob_frequency.new_full(
+                        (prob_frequency.shape[1],),
+                        self.cfg.TRAINER.BiMC.FREQUENCY.FREQ_ALPHA,
+                    )
+                prob_fused_proto = mix_frequency_probabilities(
+                    prob_fused_proto,
+                    prob_frequency,
+                    frequency_class_alpha,
+                )
 
         logits_cov = _cov_forward(img_feat, image_proto, cov_image)
         logits_knn = knn_similarity_scores(img_feat, description_features, description_targets)    

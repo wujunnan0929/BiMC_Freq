@@ -207,6 +207,42 @@ python main.py \
     TRAINER.BiMC.FREQUENCY.FREQ_ALPHA 0.10
 ~~~
 
+### Meta-trained frequency residual router
+
+`bimc_frequency_router.yaml` replaces the hand-designed probability
+interpolation with a small trainable query router.  During the base session it
+samples pseudo FSCIL episodes containing many-shot pseudo-old classes and
+five-shot pseudo-novel classes.  The router learns to choose among a null
+(original-only), low-, middle-, and high-frequency expert.  CLIP and all
+shared visual/text encoders remain frozen; after base training the router is
+also frozen, so real incremental sessions only add class prototypes and
+statistics.
+
+~~~BASH
+python main.py \
+  --data_cfg ./configs/datasets/cub200.yaml \
+  --train_cfg ./configs/trainers/bimc_frequency_router.yaml \
+  --opts TRAINER.BiMC.FREQUENCY.FFT_DEVICE cpu
+~~~
+
+The final classifier adds a gated frequency residual to the original BiMC
+logits rather than averaging two complete probability distributions.  The
+most important router ablations are:
+
+- `ROUTER.MAX_ALPHA: 0.0` keeps router training enabled but disables its
+  prediction-time residual.
+- `ROUTER.EPISODE_OLD_WAY: 0` makes every pseudo-episode class few-shot.
+- `ROUTER.ROUTE_LOSS_WEIGHT: 0.0` removes supervision from the best per-query
+  base expert and trains the router only through classification loss.
+- `ROUTER.SAFE_KL_WEIGHT: 0.0` removes the constraint that protects queries
+  already classified correctly by the original branch.
+- `ROUTER.USE_CLASS_ALPHA: True` additionally multiplies the learned query
+  gate by the conservative class reliability alpha used in Frequency V2.
+
+`TRAIN_STEPS`, `EPISODE_WAY`, `OLD_SHOT`, `SHOT`, and `QUERY` control only the
+base-session pseudo-episode training.  Router training uses cached frozen CLIP
+features, so it does not repeat image encoding at every optimization step.
+
 ## Acknowledgment
 
 In this repository, we build our code based on the following excellent open-source projects. We sincerely thank all the authors for sharing their great work:

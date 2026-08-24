@@ -88,7 +88,6 @@ class Runner:
 
 
 
-    @torch.no_grad()
     def run(self):
         print(f'Start inferencing on all tasks: [0, {self.data_manager.num_tasks - 1}]')
         state_dict_list = []

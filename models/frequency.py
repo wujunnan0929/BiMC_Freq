@@ -453,17 +453,34 @@ def compute_frequency_logits(
     class_band_weights: torch.Tensor,
 ) -> torch.Tensor:
     """Compute class logits from matched query/prototype frequency bands."""
+    band_similarity = compute_frequency_band_logits(
+        query_features, class_prototypes
+    )
+    if class_band_weights.shape != class_prototypes.shape[:2]:
+        raise ValueError("Class band weights must have shape [C, B].")
+    return torch.sum(
+        band_similarity * class_band_weights.unsqueeze(0), dim=-1
+    )
+
+
+def compute_frequency_band_logits(
+    query_features: torch.Tensor,
+    class_prototypes: torch.Tensor,
+) -> torch.Tensor:
+    """Return the un-fused cosine logit of every frequency band.
+
+    The result has shape ``[N, C, B]``.  Keeping the band dimension is useful
+    for trainable routers, which must decide whether a query benefits from a
+    particular band before the logits are fused.
+    """
     if query_features.ndim != 3 or class_prototypes.ndim != 3:
         raise ValueError("Query and prototype tensors must have shape [N/C, B, D].")
     if query_features.shape[1:] != class_prototypes.shape[1:]:
         raise ValueError("Query and prototype band/feature dimensions must match.")
-    if class_band_weights.shape != class_prototypes.shape[:2]:
-        raise ValueError("Class band weights must have shape [C, B].")
 
     query = F.normalize(query_features, dim=-1)
     prototypes = F.normalize(class_prototypes, dim=-1)
-    band_similarity = torch.einsum("nbd,cbd->ncb", query, prototypes)
-    return torch.sum(band_similarity * class_band_weights.unsqueeze(0), dim=-1)
+    return torch.einsum("nbd,cbd->ncb", query, prototypes)
 
 
 def mix_frequency_probabilities(
