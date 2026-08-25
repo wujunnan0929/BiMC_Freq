@@ -62,6 +62,14 @@ class Runner:
                 'frequency_class_alpha',
                 'frequency_reliability',
             ])
+        if self.cfg.TRAINER.BiMC.FREQUENCY_MODALITY.ENABLED:
+            keys_to_merge.extend([
+                'frequency_modality_proto',
+                'frequency_modality_uncertainty',
+                'frequency_modality_sample_counts',
+                'frequency_modality_alpha',
+                'frequency_modality_reliability',
+            ])
 
         for key in keys_to_merge:
             result[key] = torch.cat([d[key] for d in dict_list], dim=0)
@@ -136,6 +144,8 @@ class Runner:
         frequency_proto = state_dict.get('frequency_calibrated_proto')
         frequency_band_weights = state_dict.get('frequency_band_weights')
         frequency_class_alpha = state_dict.get('frequency_class_alpha')
+        frequency_modality_proto = state_dict.get('frequency_modality_proto')
+        frequency_modality_alpha = state_dict.get('frequency_modality_alpha')
 
         num_base_class = len(self.data_manager.class_index_in_task[0])
         num_accumulated_class = max(self.data_manager.class_index_in_task[task_id]) + 1
@@ -156,7 +166,9 @@ class Runner:
                                                    beta=beta,
                                                    frequency_proto=frequency_proto,
                                                    frequency_band_weights=frequency_band_weights,
-                                                   frequency_class_alpha=frequency_class_alpha)
+                                                   frequency_class_alpha=frequency_class_alpha,
+                                                   frequency_modality_proto=frequency_modality_proto,
+                                                   frequency_modality_alpha=frequency_modality_alpha)
 
             all_logits.append(logits)
             all_targets.append(targets)

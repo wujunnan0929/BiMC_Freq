@@ -243,6 +243,35 @@ most important router ablations are:
 base-session pseudo-episode training.  Router training uses cached frozen CLIP
 features, so it does not repeat image encoding at every optimization step.
 
+### Independent frequency modality (tri-modal BiMC)
+
+`bimc_frequency_modality.yaml` adds a genuinely independent third encoder:
+
+1. The image branch remains the frozen CLIP image tower.
+2. The text branch remains the frozen CLIP text tower and description prompts.
+3. The frequency branch computes a Hann-windowed FFT log-magnitude map and
+   radial power profile directly from pixels; these inputs never pass through
+   the CLIP image tower.
+
+A lightweight MLP maps the spectral descriptor into CLIP's embedding
+dimension. It is trained once on base-session images with a text-prototype
+classification loss and a frozen-image alignment loss, then frozen. Each
+incremental session only estimates new class frequency prototypes from its
+support images. The original image-text probabilities and frequency
+probabilities are fused with class-wise reliability weights derived from
+prototype uncertainty and support-set size.
+
+~~~BASH
+python main.py \
+  --data_cfg ./configs/datasets/cub200.yaml \
+  --train_cfg ./configs/trainers/bimc_frequency_modality.yaml
+~~~
+
+For a clean ablation, use the same configuration with
+`TRAINER.BiMC.FREQUENCY_MODALITY.ENABLED False`. `FUSION_WEIGHT: 0.0` keeps the
+frequency encoder training/prototype path active while removing its
+prediction-time contribution.
+
 ## Acknowledgment
 
 In this repository, we build our code based on the following excellent open-source projects. We sincerely thank all the authors for sharing their great work:

@@ -20,6 +20,13 @@ from models.frequency_router import (
     residual_frequency_fusion,
     sample_pseudo_fscil_episode,
 )
+from models.frequency_modality import (
+    FrequencyModalityEncoder,
+    FrequencySpectrumDescriptor,
+    compute_modality_alpha,
+    compute_modality_prototypes,
+    fuse_modality_probabilities,
+)
 
 def load_clip_to_cpu(cfg):
     backbone_name = cfg.MODEL.BACKBONE.NAME
@@ -129,6 +136,56 @@ class BiMC(nn.Module):
                     dropout=router_cfg.DROPOUT,
                     null_logit_bias=router_cfg.NULL_LOGIT_BIAS,
                 ).to(self.device)
+
+        self.frequency_modality_enabled = (
+            cfg.TRAINER.BiMC.FREQUENCY_MODALITY.ENABLED
+        )
+        self.frequency_modality_descriptor = None
+        self.frequency_modality_encoder = None
+        self.frequency_modality_fitted = False
+        if self.frequency_modality_enabled:
+            modality_cfg = cfg.TRAINER.BiMC.FREQUENCY_MODALITY
+            if modality_cfg.TRAIN_STEPS <= 0 or modality_cfg.BATCH_SIZE <= 0:
+                raise ValueError(
+                    "Frequency modality TRAIN_STEPS and BATCH_SIZE must be positive."
+                )
+            if modality_cfg.LR <= 0.0 or modality_cfg.LOGIT_SCALE <= 0.0:
+                raise ValueError(
+                    "Frequency modality LR and LOGIT_SCALE must be positive."
+                )
+            if modality_cfg.LOG_INTERVAL <= 0 or modality_cfg.TEMPERATURE <= 0.0:
+                raise ValueError(
+                    "Frequency modality LOG_INTERVAL and TEMPERATURE must be positive."
+                )
+            if not 0.0 <= modality_cfg.MIN_FUSION_WEIGHT <= (
+                modality_cfg.FUSION_WEIGHT
+            ) <= 1.0:
+                raise ValueError(
+                    "Frequency modality weights must satisfy 0 <= min <= fusion <= 1."
+                )
+            if (
+                modality_cfg.CLASSIFICATION_WEIGHT < 0.0
+                or modality_cfg.IMAGE_ALIGNMENT_WEIGHT < 0.0
+                or modality_cfg.CLASSIFICATION_WEIGHT
+                + modality_cfg.IMAGE_ALIGNMENT_WEIGHT
+                <= 0.0
+            ):
+                raise ValueError(
+                    "At least one frequency modality training loss must be positive."
+                )
+            self.frequency_modality_descriptor = FrequencySpectrumDescriptor(
+                grid_size=modality_cfg.GRID_SIZE,
+                radial_bins=modality_cfg.RADIAL_BINS,
+                fft_batch_size=modality_cfg.FFT_BATCH_SIZE,
+                fft_device=modality_cfg.FFT_DEVICE,
+            ).to(self.device)
+            clip_dim = int(self.clip_model.text_projection.shape[1])
+            self.frequency_modality_encoder = FrequencyModalityEncoder(
+                input_dim=self.frequency_modality_descriptor.descriptor_dim,
+                output_dim=clip_dim,
+                hidden_dim=modality_cfg.HIDDEN_DIM,
+                dropout=modality_cfg.DROPOUT,
+            ).to(self.device)
 
 
     @torch.no_grad()
@@ -267,6 +324,7 @@ class BiMC(nn.Module):
         all_features = []
         all_labels = []
         all_frequency_features = []
+        all_frequency_modality_descriptors = []
         for batch in loader:
             images, labels = self.parse_batch(batch)
             features = self.clip_model.encode_image(images)
@@ -276,6 +334,10 @@ class BiMC(nn.Module):
             if self.frequency_enabled:
                 all_frequency_features.append(
                     self.extract_frequency_img_feature(images)
+                )
+            if self.frequency_modality_enabled:
+                all_frequency_modality_descriptors.append(
+                    self.extract_frequency_modality_descriptor(images)
                 )
         all_features = torch.cat(all_features, dim=0)
         all_labels = torch.cat(all_labels, dim=0)
@@ -295,6 +357,13 @@ class BiMC(nn.Module):
         prototypes = torch.stack(prototypes, dim=0)
         prototypes = F.normalize(prototypes, dim=-1)
 
+        if self.frequency_modality_enabled:
+            frequency_modality_descriptors = torch.cat(
+                all_frequency_modality_descriptors, dim=0
+            )
+        else:
+            frequency_modality_descriptors = None
+
         if not self.frequency_enabled:
             return (
                 all_features,
@@ -304,6 +373,7 @@ class BiMC(nn.Module):
                 None,
                 None,
                 None,
+                frequency_modality_descriptors,
             )
 
         all_frequency_features = torch.cat(all_frequency_features, dim=0)
@@ -325,6 +395,7 @@ class BiMC(nn.Module):
             frequency_uncertainty,
             frequency_sample_counts,
             all_frequency_features,
+            frequency_modality_descriptors,
         )
 
 
@@ -401,6 +472,132 @@ class BiMC(nn.Module):
         updated_protos = (1 - shift_weight) * cur_protos + shift_weight * delta_protos
         updated_protos = F.normalize(updated_protos, dim=-1)
         return updated_protos
+
+
+    def fit_frequency_modality_encoder(
+        self,
+        descriptors,
+        image_features,
+        labels,
+        class_index,
+        text_features,
+    ):
+        """Train the independent spectral projection on base-session data.
+
+        CLIP remains frozen.  The classification loss aligns spectra with the
+        base text prototypes, while the instance loss transfers complementary
+        semantic structure from CLIP image embeddings.  The encoder is frozen
+        immediately after this one-time fit.
+        """
+        if not self.frequency_modality_enabled:
+            return
+        if self.frequency_modality_fitted:
+            raise RuntimeError("Frequency modality encoder was already fitted.")
+        modality_cfg = self.cfg.TRAINER.BiMC.FREQUENCY_MODALITY
+        descriptors = descriptors.detach().float()
+        image_features = F.normalize(image_features.detach().float(), dim=-1)
+        text_features = F.normalize(text_features.detach().float(), dim=-1)
+        labels = labels.detach().long()
+        class_ids = [int(class_id) for class_id in class_index]
+
+        local_labels = torch.full_like(labels, -1)
+        for local_id, global_id in enumerate(class_ids):
+            local_labels[labels == global_id] = local_id
+        if torch.any(local_labels < 0):
+            raise ValueError("Base labels do not match frequency modality classes.")
+        if text_features.shape[0] != len(class_ids):
+            raise ValueError("Text prototypes do not match frequency modality classes.")
+
+        for parameter in self.clip_model.parameters():
+            parameter.requires_grad_(False)
+        for parameter in self.frequency_modality_encoder.parameters():
+            parameter.requires_grad_(True)
+        optimizer = torch.optim.AdamW(
+            self.frequency_modality_encoder.parameters(),
+            lr=modality_cfg.LR,
+            weight_decay=modality_cfg.WEIGHT_DECAY,
+        )
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(int(self.cfg.SEED) + 2903)
+        self.frequency_modality_encoder.train()
+
+        num_samples = descriptors.shape[0]
+        batch_size = min(int(modality_cfg.BATCH_SIZE), num_samples)
+        print(
+            "train independent frequency modality: steps={}, samples={}, "
+            "descriptor_dim={}".format(
+                modality_cfg.TRAIN_STEPS,
+                num_samples,
+                descriptors.shape[1],
+            )
+        )
+        running_loss = 0.0
+        running_correct = 0
+        running_count = 0
+        running_steps = 0
+        for step in range(1, modality_cfg.TRAIN_STEPS + 1):
+            indices = torch.randint(
+                num_samples,
+                (batch_size,),
+                generator=generator,
+                device="cpu",
+            ).to(descriptors.device)
+            frequency_features = self.frequency_modality_encoder(
+                descriptors[indices]
+            )
+            logits = (
+                modality_cfg.LOGIT_SCALE
+                * frequency_features
+                @ text_features.t()
+            )
+            classification_loss = F.cross_entropy(
+                logits, local_labels[indices]
+            )
+            alignment_loss = (
+                1.0
+                - F.cosine_similarity(
+                    frequency_features, image_features[indices], dim=-1
+                )
+            ).mean()
+            loss = (
+                modality_cfg.CLASSIFICATION_WEIGHT * classification_loss
+                + modality_cfg.IMAGE_ALIGNMENT_WEIGHT * alignment_loss
+            )
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+
+            running_loss += float(loss.detach())
+            running_correct += int(
+                (logits.argmax(dim=-1) == local_labels[indices]).sum()
+            )
+            running_count += batch_size
+            running_steps += 1
+            if (
+                step == 1
+                or step == modality_cfg.TRAIN_STEPS
+                or step % modality_cfg.LOG_INTERVAL == 0
+            ):
+                print(
+                    "frequency modality step {}/{}: loss={:.4f}, "
+                    "text-prototype acc={:.2f}%".format(
+                        step,
+                        modality_cfg.TRAIN_STEPS,
+                        running_loss / running_steps,
+                        100.0 * running_correct / running_count,
+                    )
+                )
+                running_loss = 0.0
+                running_correct = 0
+                running_count = 0
+                running_steps = 0
+
+        self.frequency_modality_encoder.eval()
+        for parameter in self.frequency_modality_encoder.parameters():
+            parameter.requires_grad_(False)
+        self.frequency_modality_fitted = True
+        print("independent frequency modality training complete; encoder frozen")
 
 
     def fit_frequency_router(
@@ -736,6 +933,7 @@ class BiMC(nn.Module):
             frequency_uncertainty,
             frequency_sample_counts,
             all_frequency_features,
+            frequency_modality_descriptors,
         ) = self.inference_all_img_feature(
             loader, cls_begin_index, class_index=class_index
         )
@@ -882,6 +1080,81 @@ class BiMC(nn.Module):
                     frequency_semantic_proto=frequency_semantic_proto,
                 )
 
+        frequency_modality_state = {}
+        if self.frequency_modality_enabled:
+            modality_cfg = self.cfg.TRAINER.BiMC.FREQUENCY_MODALITY
+            if cls_begin_index == 0:
+                self.fit_frequency_modality_encoder(
+                    descriptors=frequency_modality_descriptors,
+                    image_features=images_features,
+                    labels=images_targets,
+                    class_index=class_index,
+                    text_features=text_features,
+                )
+            if not self.frequency_modality_fitted:
+                raise RuntimeError(
+                    "The frequency modality must be fitted on the base session first."
+                )
+            with torch.no_grad():
+                frequency_modality_features = self.frequency_modality_encoder(
+                    frequency_modality_descriptors
+                )
+                (
+                    frequency_modality_proto,
+                    frequency_modality_uncertainty,
+                    frequency_modality_sample_counts,
+                ) = compute_modality_prototypes(
+                    frequency_modality_features,
+                    images_targets,
+                    class_index,
+                )
+
+            if cls_begin_index == 0:
+                self.base_frequency_modality_prototype = frequency_modality_proto
+            elif modality_cfg.NOVEL_CALIBRATION:
+                print("calibrate novel frequency-modality prototypes")
+                frequency_modality_proto = self.soft_calibration(
+                    self.base_frequency_modality_prototype,
+                    frequency_modality_proto,
+                )
+
+            if modality_cfg.RELIABILITY_ALPHA:
+                (
+                    frequency_modality_alpha,
+                    frequency_modality_reliability,
+                ) = compute_modality_alpha(
+                    uncertainty=frequency_modality_uncertainty,
+                    sample_counts=frequency_modality_sample_counts,
+                    max_alpha=modality_cfg.FUSION_WEIGHT,
+                    min_alpha=modality_cfg.MIN_FUSION_WEIGHT,
+                    uncertainty_scale=modality_cfg.UNCERTAINTY_SCALE,
+                    shot_tau=modality_cfg.SHOT_TAU,
+                )
+            else:
+                frequency_modality_alpha = frequency_modality_proto.new_full(
+                    (frequency_modality_proto.shape[0],),
+                    modality_cfg.FUSION_WEIGHT,
+                )
+                frequency_modality_reliability = frequency_modality_proto.new_ones(
+                    frequency_modality_proto.shape[0]
+                )
+            print(
+                "frequency modality alpha: mean={:.3f}, min={:.3f}, max={:.3f}; "
+                "uncertainty={:.3f}".format(
+                    frequency_modality_alpha.mean().item(),
+                    frequency_modality_alpha.min().item(),
+                    frequency_modality_alpha.max().item(),
+                    frequency_modality_uncertainty.mean().item(),
+                )
+            )
+            frequency_modality_state = {
+                'frequency_modality_proto': frequency_modality_proto,
+                'frequency_modality_uncertainty': frequency_modality_uncertainty,
+                'frequency_modality_sample_counts': frequency_modality_sample_counts,
+                'frequency_modality_alpha': frequency_modality_alpha,
+                'frequency_modality_reliability': frequency_modality_reliability,
+            }
+
 
         cov_images = torch.cov(images_features.T)
 
@@ -910,6 +1183,7 @@ class BiMC(nn.Module):
             'sample_cnt': len(images_features)
         }
         state.update(frequency_state)
+        state.update(frequency_modality_state)
         return state
 
    
@@ -922,7 +1196,9 @@ class BiMC(nn.Module):
                            beta,
                            frequency_proto=None,
                            frequency_band_weights=None,
-                           frequency_class_alpha=None):
+                           frequency_class_alpha=None,
+                           frequency_modality_proto=None,
+                           frequency_modality_alpha=None):
     
         def knn_similarity_scores(queries, support_features, support_labels):
             """
@@ -1032,6 +1308,33 @@ class BiMC(nn.Module):
                     frequency_class_alpha,
                 )
 
+        if self.frequency_modality_enabled:
+            if frequency_modality_proto is None:
+                raise ValueError(
+                    "Tri-modal mode requires frequency_modality_proto."
+                )
+            modality_cfg = self.cfg.TRAINER.BiMC.FREQUENCY_MODALITY
+            frequency_modality_features = self.extract_frequency_modality_feature(
+                images
+            )
+            frequency_modality_logits = (
+                frequency_modality_features.float()
+                @ F.normalize(frequency_modality_proto.float(), dim=-1).t()
+            ) / modality_cfg.TEMPERATURE
+            frequency_modality_prob = F.softmax(
+                frequency_modality_logits, dim=-1
+            )
+            if frequency_modality_alpha is None:
+                frequency_modality_alpha = frequency_modality_prob.new_full(
+                    (frequency_modality_prob.shape[1],),
+                    modality_cfg.FUSION_WEIGHT,
+                )
+            prob_fused_proto = fuse_modality_probabilities(
+                prob_fused_proto.float(),
+                frequency_modality_prob,
+                frequency_modality_alpha,
+            )
+
         logits_cov = _cov_forward(img_feat, image_proto, cov_image)
         logits_knn = knn_similarity_scores(img_feat, description_features, description_targets)    
         prob_cov = F.softmax(logits_cov / 512, dim=-1)
@@ -1076,6 +1379,28 @@ class BiMC(nn.Module):
             features = self.clip_model.encode_image(band_images[:, band_id])
             band_features.append(F.normalize(features, dim=-1))
         return torch.stack(band_features, dim=1)
+
+
+    @torch.no_grad()
+    def extract_frequency_modality_descriptor(self, images):
+        """Compute phase-free FFT descriptors without using CLIP."""
+        if (
+            not self.frequency_modality_enabled
+            or self.frequency_modality_descriptor is None
+        ):
+            raise RuntimeError("Independent frequency modality is not enabled.")
+        return self.frequency_modality_descriptor(images.to(self.device))
+
+
+    @torch.no_grad()
+    def extract_frequency_modality_feature(self, images):
+        """Encode an image through the frozen independent frequency tower."""
+        if not self.frequency_modality_fitted:
+            raise RuntimeError(
+                "Independent frequency encoder must be fitted on the base session."
+            )
+        descriptors = self.extract_frequency_modality_descriptor(images)
+        return self.frequency_modality_encoder(descriptors)
 
 
     @torch.no_grad()
