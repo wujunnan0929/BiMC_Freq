@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .vscode/
+.idea/
 outputs/
 .codex_tmp
 tools/*.local.ps1
