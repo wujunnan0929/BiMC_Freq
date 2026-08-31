@@ -1,3 +1,10 @@
+import copy
+import hashlib
+import json
+import os
+from pathlib import Path
+from random import SystemRandom
+
 import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
@@ -34,6 +41,7 @@ class DatasetManager:
             self.class_index_in_task.append(np.arange(start, end))
         self.num_tasks = len(self.class_index_in_task)
         self.train_transform, self.test_transform = self._set_transform()
+        self._initialize_support_protocol()
 
 
 
@@ -62,6 +70,9 @@ class DatasetManager:
         assert 0 <= task_id < len(self.class_index_in_task), \
                f"task id {task_id} should be in range [0, {len(self.class_index_in_task) - 1}]"
 
+        # Transform changes must never cause another support-set draw.
+        self._ensure_support_protocol()
+
         # Get data
         if source == 'train':
             # When training, using data of task [i]
@@ -70,11 +81,16 @@ class DatasetManager:
                 class_idx = np.concatenate(self.class_index_in_task[0: task_id + 1])
             else:
                 class_idx = self.class_index_in_task[task_id]
+            if accumulated_past:
+                sample_indices = np.concatenate(self._session_support_indices[:task_id + 1])
+            else:
+                sample_indices = self._session_support_indices[task_id]
 
         elif source == 'test':
             # When testing, using data of tasks [0..i]
             x, y = self.test_data, self.test_targets
             class_idx = np.concatenate(self.class_index_in_task[0: task_id + 1])
+            sample_indices = self._indices_for_classes(y, class_idx)
 
         else:
             raise ValueError(f'Invalid data source :{source}')
@@ -111,10 +127,213 @@ class DatasetManager:
             return indices
         
         class_to_task_id = find_sublist_indices(self.class_index_in_task, class_idx)
-        num_shot = self.num_base_shot if task_id == 0 else self.num_inc_shot
-        data, targets = self._select_data_from_class_index(x, y, class_idx, num_shot, source)
-        task_dataset = TaskDataset(data, targets, transform, class_to_task_id, self.class_names)
+        data = np.asarray(x)[sample_indices]
+        targets = np.asarray(y)[sample_indices]
+        task_dataset = TaskDataset(
+            data, targets, transform, class_to_task_id, self.class_names,
+            sample_indices=sample_indices,
+        )
         return task_dataset
+
+    @staticmethod
+    def _indices_for_classes(targets, class_ids, shot=None, rng=None):
+        """Select dataset-global indices, keeping the established class ordering."""
+        targets = np.asarray(targets)
+        selected = []
+        for class_id in class_ids:
+            candidates = np.flatnonzero(targets == class_id)
+            if shot is not None and shot != -1:
+                if shot < 1:
+                    raise ValueError(f"Support shot must be positive or -1, got {shot}")
+                if shot > len(candidates):
+                    print(f'shot:{shot} is greater than num of sample:{len(candidates)} in class{class_id}')
+                else:
+                    if rng is None:
+                        raise ValueError("Few-shot selection requires an independent random generator")
+                    candidates = rng.choice(candidates, size=shot, replace=False)
+            selected.append(candidates)
+        return np.concatenate(selected).astype(np.int64, copy=False)
+
+    def _ensure_support_protocol(self):
+        # Lazy initialization also supports lightweight managers used by tests/tools.
+        if not hasattr(self, '_session_support_indices'):
+            self._initialize_support_protocol()
+
+    def _initialize_support_protocol(self):
+        dataset_cfg = getattr(getattr(self, 'cfg', None), 'DATASET', None)
+        requested_seed = int(getattr(dataset_cfg, 'SUPPORT_SEED', -1))
+        self._explicit_support_seed = requested_seed
+        if requested_seed < 0:
+            requested_seed = int(getattr(getattr(self, 'cfg', None), 'SEED', -1))
+        if requested_seed < 0:
+            requested_seed = SystemRandom().randrange(2 ** 32)
+        if requested_seed >= 2 ** 32:
+            raise ValueError("Support seed must be in [0, 2**32 - 1]")
+        self.support_seed = requested_seed
+        self._support_rng = np.random.RandomState(self.support_seed)
+        manifest_path = getattr(dataset_cfg, 'SUPPORT_MANIFEST', '')
+        if manifest_path and Path(manifest_path).exists():
+            self.load_support_manifest(manifest_path)
+            return
+        selections = []
+        for task_id, class_ids in enumerate(self.class_index_in_task):
+            shot = self.num_base_shot if task_id == 0 else self.num_inc_shot
+            indices = self._indices_for_classes(
+                self.train_targets, class_ids, shot=shot, rng=self._support_rng,
+            )
+            indices.setflags(write=False)
+            selections.append(indices)
+        self._session_support_indices = tuple(selections)
+        if manifest_path:
+            self.save_support_manifest(manifest_path)
+
+    def _training_sample_fingerprint(self):
+        """Hash the ordered sample identities without opening path-backed images.
+
+        In-memory images include dtype, shape, and every byte in logical C order.
+        Streaming bounds temporary copies even for non-contiguous image arrays.
+        """
+        values = np.asarray(self.train_data)
+        digest = hashlib.sha256()
+        if values.ndim == 1 and values.dtype.kind in ('U', 'S'):
+            digest.update(b'ordered-paths-v1\0')
+            for path in values:
+                encoded = os.fsdecode(path).encode('utf-8', errors='surrogatepass')
+                # Length prefixes avoid ambiguity when filenames contain separators.
+                digest.update(len(encoded).to_bytes(8, 'little'))
+                digest.update(encoded)
+        else:
+            if values.ndim < 1 or values.dtype.hasobject:
+                raise TypeError('Training data must be an image ndarray or a 1-D sequence of paths')
+            digest.update(b'ordered-ndarray-v1\0')
+            digest.update(json.dumps(
+                {'dtype': values.dtype.str, 'shape': list(values.shape)},
+                sort_keys=True, separators=(',', ':'),
+            ).encode('ascii'))
+            chunk_bytes = 1024 * 1024
+            if values.flags.c_contiguous:
+                raw = memoryview(values).cast('B')
+                for start in range(0, len(raw), chunk_bytes):
+                    digest.update(raw[start:start + chunk_bytes])
+            else:
+                iterator = np.nditer(
+                    values, flags=['external_loop', 'buffered', 'zerosize_ok'],
+                    op_flags=['readonly'], order='C',
+                    buffersize=max(1, chunk_bytes // max(1, values.dtype.itemsize)),
+                )
+                for block in iterator:
+                    digest.update(block.tobytes(order='C'))
+        return digest.hexdigest()
+
+    def _support_metadata(self, refresh=False):
+        if refresh or not hasattr(self, '_support_metadata_cache'):
+            targets = np.asarray(self.train_targets, dtype='<i8')
+            if len(self.train_data) != len(targets):
+                raise ValueError('Training sample and target counts do not match')
+            self._support_metadata_cache = {
+                'version': 2,
+                'dataset': str(self.dataset_name).lower(),
+                'train_size': len(targets),
+                'train_targets_sha256': hashlib.sha256(targets.tobytes()).hexdigest(),
+                'train_samples_sha256': self._training_sample_fingerprint(),
+                'class_names': list(self.class_names),
+                'class_groups': [np.asarray(group).astype(int).tolist()
+                                 for group in self.class_index_in_task],
+                'shots': {'base': self.num_base_shot, 'incremental': self.num_inc_shot},
+            }
+        # The manifest builder adds session fields; never let those mutate the cache.
+        return copy.deepcopy(self._support_metadata_cache)
+
+    def _support_manifest(self):
+        manifest = self._support_metadata()
+        manifest['seed'] = self.support_seed
+        targets = np.asarray(self.train_targets)
+        manifest['sessions'] = [
+            {'task_id': task_id, 'indices': indices.tolist(),
+             'targets': targets[indices].astype(int).tolist()}
+            for task_id, indices in enumerate(self._session_support_indices)
+        ]
+        return manifest
+
+    def save_support_manifest(self, path):
+        """Export the fixed protocol; never silently replace a different one."""
+        self._ensure_support_protocol()
+        path = Path(path)
+        manifest = self._support_manifest()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with path.open('x', encoding='utf-8') as handle:
+                json.dump(manifest, handle, indent=2, ensure_ascii=False)
+                handle.write('\n')
+        except FileExistsError:
+            with path.open('r', encoding='utf-8') as handle:
+                existing = json.load(handle)
+            if existing != manifest:
+                raise ValueError(f"Refusing to overwrite a different support manifest: {path}")
+        return str(path)
+
+    def load_support_manifest(self, path):
+        """Load and validate indices without opening images or resampling classes."""
+        path = Path(path)
+        try:
+            with path.open('r', encoding='utf-8') as handle:
+                manifest = json.load(handle)
+            if not isinstance(manifest, dict):
+                raise ValueError("expected a JSON object")
+            if manifest.get('version') != 2:
+                raise ValueError('unsupported version; version 2 with sample identity hashes is required')
+            # Loading is an explicit integrity check. Recompute even when an
+            # already-used manager is asked to load after its data was modified.
+            for key, expected in self._support_metadata(refresh=True).items():
+                if manifest.get(key) != expected:
+                    raise ValueError(f"{key} does not match the current dataset/protocol")
+            seed = manifest.get('seed')
+            if type(seed) is not int or not 0 <= seed < 2 ** 32:
+                raise ValueError("seed must be an integer in [0, 2**32 - 1]")
+            explicit_seed = getattr(self, '_explicit_support_seed', -1)
+            if explicit_seed >= 0 and seed != explicit_seed:
+                raise ValueError("seed does not match DATASET.SUPPORT_SEED")
+            sessions = manifest.get('sessions')
+            if not isinstance(sessions, list) or len(sessions) != len(self.class_index_in_task):
+                raise ValueError("sessions must contain exactly one entry per task")
+            targets = np.asarray(self.train_targets)
+            selections, all_indices = [], set()
+            for task_id, (session, classes) in enumerate(zip(sessions, self.class_index_in_task)):
+                if not isinstance(session, dict) or session.get('task_id') != task_id:
+                    raise ValueError(f"invalid task_id for session {task_id}")
+                raw_indices = session.get('indices')
+                if not isinstance(raw_indices, list) or any(type(i) is not int for i in raw_indices):
+                    raise ValueError(f"session {task_id}: indices must be an integer list")
+                indices = np.asarray(raw_indices, dtype=np.int64)
+                if np.any(indices < 0) or np.any(indices >= len(targets)):
+                    raise ValueError(f"session {task_id}: index outside training dataset")
+                if len(set(raw_indices)) != len(raw_indices) or all_indices.intersection(raw_indices):
+                    raise ValueError(f"session {task_id}: duplicate support index")
+                selected_targets = targets[indices].astype(int)
+                raw_targets = session.get('targets')
+                if (not isinstance(raw_targets, list)
+                        or any(type(y) is not int for y in raw_targets)
+                        or raw_targets != selected_targets.tolist()):
+                    raise ValueError(f"session {task_id}: saved targets do not match indices")
+                shot = self.num_base_shot if task_id == 0 else self.num_inc_shot
+                expected_targets = []
+                for class_id in classes:
+                    available = int(np.sum(targets == class_id))
+                    count = available if shot in (None, -1) else min(shot, available)
+                    if count < 1:
+                        raise ValueError(f"session {task_id}: no support for class {class_id}")
+                    expected_targets.extend([int(class_id)] * count)
+                if selected_targets.tolist() != expected_targets:
+                    raise ValueError(f"session {task_id}: class membership, ordering, or shot count mismatch")
+                indices.setflags(write=False)
+                selections.append(indices)
+                all_indices.update(raw_indices)
+            self.support_seed = seed
+            self._support_rng = np.random.RandomState(seed)
+            self._session_support_indices = tuple(selections)
+        except (ValueError, TypeError, OverflowError) as error:
+            raise ValueError(f"Invalid support manifest {path}: {error}") from error
+        return str(path)
     
 
     
@@ -149,36 +368,13 @@ class DatasetManager:
 
 
     def _select_data_from_class_index(self, x, y, class_idx, shot, source):
-        ret_x = []
-        ret_y = []
-        if isinstance(x, list):
-            x = np.array(x)
-        for c in class_idx:
-            idx_c = np.where(y == c)[0]
-            
-            if shot is not None and source == 'train':
-                # Random choosing index
-                # NOTE: Only when training, we can modify the num of samples
-                # assert shot <= len(idx_c), f"shot {shot} should not be greater than {len(idx_c)}"
-                if shot == -1:
-                    idx_selected = idx_c
-                
-                elif shot > len(idx_c):
-                    # num of shot is greater than num of samples in this class
-                    # hence use all samples in this class
-                    print(f'shot:{shot} is greater than num of sample:{len(idx_c)} in class{c}')
-                    idx_selected = idx_c
-                else:
-                    idx_selected = np.random.choice(idx_c, size=shot, replace=False)
-            else:
-                idx_selected = idx_c
-
-            ret_x.append(x[idx_selected])
-            ret_y.append(y[idx_selected])
-        ret_x = np.concatenate(ret_x)
-        ret_y = np.concatenate(ret_y)
-
-        return ret_x, ret_y
+        # Compatibility helper. Public loaders use the fixed session cache above.
+        self._ensure_support_protocol()
+        indices = self._indices_for_classes(
+            y, class_idx, shot=shot if source == 'train' else None,
+            rng=self._support_rng,
+        )
+        return np.asarray(x)[indices], np.asarray(y)[indices]
     
 
     def _set_transform(self):
@@ -203,14 +399,22 @@ class DatasetManager:
 
 
 class TaskDataset(Dataset):
-    def __init__(self, images, labels, transform, class_to_task_id=None, class_name=None):
+    def __init__(self, images, labels, transform, class_to_task_id=None, class_name=None,
+                 sample_indices=None):
         assert len(images) == len(labels), "Data size error!"
         self.images = images
         self.labels = labels
         self.transform = transform
-        self.use_path = isinstance(images[0], str)
+        self.use_path = bool(len(images)) and isinstance(images[0], str)
         self.class_to_task_id = class_to_task_id
         self.class_name = class_name
+        self.sample_indices = np.asarray(
+            np.arange(len(images)) if sample_indices is None else sample_indices,
+            dtype=np.int64,
+        ).copy()
+        if len(self.sample_indices) != len(images):
+            raise ValueError("Sample index count must match dataset size")
+        self.sample_indices.setflags(write=False)
 
 
     def __len__(self):
@@ -236,6 +440,8 @@ class TaskDataset(Dataset):
             
         ret = {
             'idx': idx, 
+            'global_index': int(self.sample_indices[idx]),
+            'sample_id': int(self.sample_indices[idx]),
             'image': image,
             'label': label,
             'cls_name': cls_name,

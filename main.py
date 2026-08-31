@@ -29,6 +29,7 @@ def extend_cfg(cfg):
 
     cfg.METHOD = ''
     cfg.SEED = -1
+    cfg.OUTPUT_DIR = ''
 
     # For dataset config
     cfg.DATASET = CN()
@@ -42,6 +43,8 @@ def extend_cfg(cfg):
     cfg.DATASET.NUM_INC_SHOT  = -1
     cfg.DATASET.BETA = -1.0
     cfg.DATASET.ENSEMBLE_ALPHA = -1.0
+    cfg.DATASET.SUPPORT_SEED = -1
+    cfg.DATASET.SUPPORT_MANIFEST = ''
     
     # For data
     cfg.DATALOADER = CN()
@@ -69,6 +72,39 @@ def extend_cfg(cfg):
     cfg.TRAINER.BiMC.GAMMA_BASE = -1.0
     cfg.TRAINER.BiMC.GAMMA_INC = -1.0
     cfg.TRAINER.BiMC.USING_ENSEMBLE = False
+
+    # Additive classifier adaptation; CLIP and completed class codes stay frozen.
+    cfg.TRAINER.BiMC.RESIDUAL = CN()
+    residual = cfg.TRAINER.BiMC.RESIDUAL
+    residual.ENABLED = False
+    residual.DICTIONARY = 'residual_svd'  # random, residual_svd, meta, identity
+    residual.RANK = 8
+    residual.SVD_REPEATS = 20
+    residual.SVD_REFERENCE_SHOT = 20
+    residual.MAX_DELTA = 0.20
+    residual.GAIN = 1.0
+    residual.TRAIN_STEPS = 100
+    residual.LR = 0.01
+    residual.OPTIMIZER = 'sgd'
+    residual.L2_WEIGHT = 0.01
+    residual.OLD_LOSS_WEIGHT = 1.0
+    residual.OLD_MARGIN = 0.05
+    residual.GRAD_CLIP = 5.0
+    residual.TEMPERATURE = 1.0
+    residual.META_STEPS = 100
+    residual.META_LR = 0.001
+    residual.META_INNER_STEPS = 5
+    residual.META_INNER_LR = 0.1
+    residual.META_WAY = 10
+    residual.META_OLD_WAY = 5
+    residual.META_OLD_SHOT = 20
+    residual.META_QUERY = 5
+    residual.META_ORTH_WEIGHT = 0.01
+    residual.META_VAL_FRACTION = 0.2
+    residual.META_VAL_EPISODES = 20
+    residual.RESERVE_BASE_VALIDATION = False
+    residual.BASE_ONLY = False
+    residual.SAVE_CHECKPOINT = True
 
     # Frequency-aware prototype calibration.  The legacy path is training-free;
     # an optional base-session residual router can be enabled below.  Frequency

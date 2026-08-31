@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import models.clip.clip as clip
 import json
+import math
 
 from models.frequency import (
     RadialFrequencyDecomposer,
@@ -56,6 +57,8 @@ class BiMC(nn.Module):
 
         clip_model.eval()
         self.clip_model = clip_model.to(self.device)
+        self.clip_model.requires_grad_(False)
+        self.residual_head = None
         self.text_proto = None
         self.description_proto = None
         self.vision_proto = None
@@ -739,6 +742,12 @@ class BiMC(nn.Module):
         ) = self.inference_all_img_feature(
             loader, cls_begin_index, class_index=class_index
         )
+        # Preserve visual means before any text/base-prototype calibration.
+        # They are the only image memory retained across sessions by the runner.
+        raw_image_mean = torch.stack([
+            images_features[images_targets == int(class_id)].mean(dim=0)
+            for class_id in class_index
+        ])
         # Explicit prompt selection must use only the current session's raw
         # support-set prototypes, before optional novel-to-base calibration.
         frequency_grounding_proto = frequency_image_proto
@@ -872,14 +881,26 @@ class BiMC(nn.Module):
                 'frequency_reliability': frequency_reliability,
             }
             if cls_begin_index == 0 and self.frequency_router is not None:
+                router_positions = torch.arange(len(class_index), device=images_features.device)
+                router_mask = torch.ones_like(images_targets, dtype=torch.bool)
+                residual_cfg = self.cfg.TRAINER.BiMC.RESIDUAL
+                if residual_cfg.RESERVE_BASE_VALIDATION:
+                    generator = torch.Generator().manual_seed(int(self.cfg.SEED) + 7101)
+                    order = torch.randperm(len(class_index), generator=generator)
+                    val_count = math.ceil(len(class_index) * residual_cfg.META_VAL_FRACTION)
+                    if len(class_index) - val_count < 2:
+                        raise ValueError('Base router needs at least two non-validation classes.')
+                    router_positions = order[val_count:].to(images_features.device)
+                    router_ids = torch.as_tensor(class_index, device=images_features.device)[router_positions]
+                    router_mask = (images_targets[:, None] == router_ids[None, :]).any(1)
                 self.fit_frequency_router(
-                    image_features=images_features,
-                    frequency_features=all_frequency_features,
-                    labels=images_targets,
-                    class_index=class_index,
-                    text_features=text_features,
-                    description_proto=description_proto,
-                    frequency_semantic_proto=frequency_semantic_proto,
+                    image_features=images_features[router_mask],
+                    frequency_features=all_frequency_features[router_mask],
+                    labels=images_targets[router_mask],
+                    class_index=[int(class_index[int(pos)]) for pos in router_positions],
+                    text_features=text_features[router_positions],
+                    description_proto=description_proto[router_positions],
+                    frequency_semantic_proto=frequency_semantic_proto[router_positions],
                 )
 
 
@@ -910,6 +931,17 @@ class BiMC(nn.Module):
             'sample_cnt': len(images_features)
         }
         state.update(frequency_state)
+        state['raw_image_mean'] = raw_image_mean
+        if all_frequency_features is not None:
+            state['raw_frequency_mean'] = torch.stack([
+                all_frequency_features[images_targets == int(class_id)].mean(dim=0)
+                for class_id in class_index
+            ])
+            # Temporary cache for fitting the current session only; never merge
+            # or retain sample-level frequency features across sessions.
+            state['frequency_features'] = all_frequency_features
+            if self.cfg.TRAINER.BiMC.FREQUENCY.USE_EXPLICIT_DESCRIPTIONS:
+                state['frequency_description_candidates'] = frequency_description_candidates
         return state
 
    
@@ -923,6 +955,40 @@ class BiMC(nn.Module):
                            frequency_proto=None,
                            frequency_band_weights=None,
                            frequency_class_alpha=None):
+        image_features = self.extract_img_feature(images)
+        frequency_features = (
+            self.extract_frequency_img_feature(images)
+            if self.frequency_enabled else None
+        )
+        reference = self.reference_scores_from_features(
+            image_features, num_cls, num_base_cls, image_proto, cov_image,
+            description_proto, description_features, description_targets,
+            text_features, beta, frequency_proto, frequency_band_weights,
+            frequency_class_alpha, frequency_features,
+        )
+        return self.apply_incremental_residual(image_features, reference)
+
+    def apply_incremental_residual(self, image_features, reference_scores):
+        """Keep the original output exactly when the residual is disabled/zero."""
+        if self.residual_head is None:
+            return reference_scores
+        class_ids = torch.arange(reference_scores.shape[1], device=image_features.device)
+        residual = self.residual_head.forward_residual(image_features, class_ids)
+        if not torch.any(residual != 0):
+            return reference_scores
+        return reference_scores.float().clamp_min(1e-8).log() + residual
+
+    def reference_scores_from_features(
+        self, image_features, num_cls, num_base_cls, image_proto, cov_image,
+        description_proto, description_features, description_targets,
+        text_features, beta, frequency_proto=None, frequency_band_weights=None,
+        frequency_class_alpha=None, frequency_features=None, cov_inverse=None,
+    ):
+        """The complete legacy reference, reusable for support/query/anchors.
+
+        Returns positive ensemble votes, not logits or normalized probabilities.
+        No residual is applied here, including when a head has been fitted.
+        """
     
         def knn_similarity_scores(queries, support_features, support_labels):
             """
@@ -949,8 +1015,7 @@ class BiMC(nn.Module):
             Compute the Mahalanobis distance between feature vectors and a class prototype.
             """
             left_term = torch.matmul(dist, cov_inv)
-            mahal = torch.matmul(left_term, dist.T)
-            return torch.diag(mahal)
+            return torch.sum(left_term * dist, dim=-1)
 
 
         def _cov_forward(feat, proto, cov):
@@ -959,7 +1024,10 @@ class BiMC(nn.Module):
             features and each class prototype using a shared covariance matrix.
             """
             maha_dist = []
-            inv_covmat = torch.pinverse(cov.to(dtype=torch.float32))
+            inv_covmat = (
+                torch.pinverse(cov.to(dtype=torch.float32))
+                if cov_inverse is None else cov_inverse
+            )
             inv_covmat = inv_covmat.to(dtype=proto.dtype)
             for cl in range(num_cls):
                 distance = feat - proto[cl]
@@ -971,8 +1039,7 @@ class BiMC(nn.Module):
         
 
         # Normalize the image features
-        img_feat = self.extract_img_feature(images)
-        img_feat = F.normalize(img_feat, dim=-1)
+        img_feat = F.normalize(image_features, dim=-1)
 
         if self.cfg.TRAINER.BiMC.TEXT_CALIBRATION:
             lambda_t = self.cfg.TRAINER.BiMC.LAMBDA_T
@@ -991,7 +1058,8 @@ class BiMC(nn.Module):
                 raise ValueError(
                     "Frequency mode requires calibrated prototypes and band weights."
                 )
-            frequency_features = self.extract_frequency_img_feature(images)
+            if frequency_features is None:
+                raise ValueError("Frequency reference scoring requires per-view features.")
             if self.frequency_router is not None:
                 band_logits = compute_frequency_band_logits(
                     frequency_features, frequency_proto

@@ -243,6 +243,62 @@ most important router ablations are:
 base-session pseudo-episode training.  Router training uses cached frozen CLIP
 features, so it does not repeat image encoding at every optimization step.
 
+## Incremental low-rank classifier residual
+
+The new experiment freezes CLIP, the completed base frequency router (when
+enabled), the shared dictionary, and all previous class codes. Each real
+incremental session learns only the current classes' low-dimensional codes.
+The bounded residual is added to the log of the complete BiMC reference votes.
+This adapts the classifier on original CLIP features; it does not insert LoRA
+into the visual backbone or learn per-frequency dictionaries.
+
+```bash
+python main.py --data_cfg configs/datasets/cub200.yaml --train_cfg configs/trainers/bimc_incremental_residual.yaml
+```
+
+Prepare the original dataset and descriptions first, and set `DATASET.ROOT`
+as described above. `DICTIONARY` supports `random`, `residual_svd`, `meta`, and
+`identity` (the full-dimensional control). The default residual configuration
+uses SVD; `--opts TRAINER.BiMC.RESIDUAL.DICTIONARY meta` enables differentiable
+support/query episodic dictionary learning. Real incremental training and base
+validation use `RESIDUAL.OPTIMIZER` (`sgd` by default), while meta inner updates
+use SGD. The number of inner and real adaptation steps is configurable.
+
+Use held-out **base training classes**, without running benchmark test images,
+to inspect a dictionary/hyperparameter candidate:
+
+```bash
+python main.py --data_cfg configs/datasets/cub200.yaml --train_cfg configs/trainers/bimc_incremental_residual.yaml --opts TRAINER.BiMC.RESIDUAL.DICTIONARY meta TRAINER.BiMC.RESIDUAL.BASE_ONLY True OUTPUT_DIR outputs/residual_base_validation
+```
+
+Inspect the paired experiment commands before launching the complete matrix:
+
+```bash
+python tools/run_incremental_residual_experiments.py --data-cfg configs/datasets/cub200.yaml --suite core --seeds 1 2 3 --dry-run
+# Add --execute (instead of --dry-run) to run the commands sequentially.
+```
+
+The core matrix includes the unchanged reference, zero residual, random, SVD,
+and meta dictionaries. The extended matrix adds no-old-loss and full-rank
+controls. All variants for a seed share a validated support manifest. Repeated
+dataset construction uses the same sample identities, so training/statistics
+cannot silently draw different 5-shot supports. This also makes support sampling
+independent of any router/meta-training random-number consumption.
+
+Runs with `OUTPUT_DIR` save `metrics.json`, `support.json`, `config.yaml`, and a
+compact `checkpoint.pt` boundary snapshot. The snapshot contains classifier,
+router, and class statistics, but is not an automatic mid-run resume mechanism.
+Individual image features are released at each session boundary; the old-class
+constraint uses raw visual class means. Metrics include all-seen, base/novel,
+harmonic, forgetting, old-to-current-new errors, reference accuracy, time, and
+retained tensor bytes. `GAIN=0` preserves reference predictions exactly and
+skips ineffective code optimization.
+
+See [the experiment protocol](docs/incremental_residual_experiments.md) and
+[the mechanism design](docs/incremental_low_rank_residual_design.md) for
+assumptions, limits, ablations, and the distinction from backbone LoRA. No
+benchmark improvement is claimed without running the full controlled matrix.
+
 ## Acknowledgment
 
 In this repository, we build our code based on the following excellent open-source projects. We sincerely thank all the authors for sharing their great work:

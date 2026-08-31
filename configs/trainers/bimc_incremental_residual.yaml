@@ -1,0 +1,61 @@
+SEED: 1
+OUTPUT_DIR: "outputs/incremental_residual/single_run"
+
+DEVICE:
+  DEVICE_NAME: "cuda"
+  GPU_ID: "0;"
+
+DATALOADER:
+  TRAIN:
+    BATCH_SIZE_BASE: 64
+    BATCH_SIZE_INC: 64
+  TEST:
+    BATCH_SIZE: 100
+  NUM_WORKERS: 4
+
+MODEL:
+  BACKBONE:
+    NAME: "ViT-B/16"
+
+TRAINER:
+  BiMC:
+    PREC: "fp16"
+    VISION_CALIBRATION: True
+    LAMBDA_I: 0.1
+    TAU: 16
+    TEXT_CALIBRATION: True
+    LAMBDA_T: 0.5
+    GAMMA_BASE: 1.0
+    GAMMA_INC: 5.0
+    USING_ENSEMBLE: True
+    RESIDUAL:
+      ENABLED: True
+      # The experiment launcher overrides this for matched ablations.
+      DICTIONARY: "residual_svd"
+      RANK: 8
+      SVD_REPEATS: 20
+      SVD_REFERENCE_SHOT: 20
+      MAX_DELTA: 0.20
+      GAIN: 1.0
+      TRAIN_STEPS: 100
+      LR: 0.1
+      OPTIMIZER: "sgd"
+      L2_WEIGHT: 0.01
+      OLD_LOSS_WEIGHT: 1.0
+      OLD_MARGIN: 0.05
+      GRAD_CLIP: 5.0
+      TEMPERATURE: 1.0
+      META_STEPS: 100
+      META_LR: 0.001
+      META_INNER_STEPS: 5
+      META_INNER_LR: 0.1
+      META_WAY: 10
+      META_OLD_WAY: 5
+      META_OLD_SHOT: 20
+      META_QUERY: 5
+      META_ORTH_WEIGHT: 0.01
+      META_VAL_FRACTION: 0.2
+      META_VAL_EPISODES: 20
+      RESERVE_BASE_VALIDATION: True
+      BASE_ONLY: False
+      SAVE_CHECKPOINT: True
