@@ -3,6 +3,10 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/BiMC_Freq.iml" filepath="$PROJECT_DIR$/.idea/BiMC_Freq.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/gyp-next.iml" filepath="$PROJECT_DIR$/.idea/gyp-next.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/gyp-next@1.iml" filepath="$PROJECT_DIR$/.idea/gyp-next@1.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/gyp-next@2.iml" filepath="$PROJECT_DIR$/.idea/gyp-next@2.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/gyp-next@3.iml" filepath="$PROJECT_DIR$/.idea/gyp-next@3.iml" />
     </modules>
   </component>
 </project>
