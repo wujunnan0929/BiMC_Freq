@@ -3,4 +3,6 @@ __pycache__/
 .vscode/
 outputs/
 .codex_tmp
+docs/
+shared_dictionary_group_report*
 tools/*.local.ps1
