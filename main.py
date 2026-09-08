@@ -106,6 +106,29 @@ def extend_cfg(cfg):
     residual.BASE_ONLY = False
     residual.SAVE_CHECKPOINT = True
 
+    # Frozen pairwise frequency evidence. Legacy fusion and residuals stay off.
+    cfg.TRAINER.BiMC.CONSENSUS = CN()
+    consensus = cfg.TRAINER.BiMC.CONSENSUS
+    consensus.ENABLED = False
+    consensus.MODE = 'consensus'  # visual, semantic, average, consensus
+    consensus.VIEW_CONTROL = 'frequency'  # frequency, original, augmentation
+    consensus.SEMANTIC_PERMUTATION = [0, 1, 2]
+    consensus.AUTO_CALIBRATE = True
+    consensus.LAMBDA = 0.0
+    consensus.LAMBDA_GRID = [0.0, 0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1]
+    consensus.SCALE_EPS = 1e-4
+    consensus.CALIBRATION_SEED = -1  # derived from run SEED when negative
+    consensus.FIT_EPISODES = 20
+    consensus.VAL_EPISODES = 20
+    consensus.FIT_FRACTION = 0.5
+    consensus.OLD_WAY = 10
+    consensus.NEW_WAY = 5
+    consensus.OLD_SHOT = 20
+    consensus.SHOT = 5
+    consensus.QUERY = 5
+    consensus.STAGES = 2
+    consensus.SAVE_PREDICTIONS = True
+
     # Frequency-aware prototype calibration.  The legacy path is training-free;
     # an optional base-session residual router can be enabled below.  Frequency
     # mode defaults to off so existing BiMC configs reproduce the original method.

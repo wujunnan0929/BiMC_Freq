@@ -9,6 +9,7 @@ from tqdm import tqdm
 from datasets.data_manager import DatasetManager
 from engine.residual_training import initialize_residual, make_reference_scorer
 from models.bimc import BiMC
+from utils.consensus_metrics import prediction_diagnostics
 from utils.incremental_metrics import (
     compute_session_metrics, compute_forgetting, summarize_sessions,
 )
@@ -59,6 +60,7 @@ class Runner:
         self.task_acc_list = []
         self.sessions = []
         self.dictionary_report = None
+        self.consensus_report = None
         self.output_dir = Path(cfg.OUTPUT_DIR) if cfg.OUTPUT_DIR else None
         if self.output_dir is not None:
             self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -71,7 +73,7 @@ class Runner:
             'description_proto', 'description_features', 'description_targets',
             'text_features', 'text_targets', 'image_proto', 'raw_image_mean',
         ]
-        if self.cfg.TRAINER.BiMC.FREQUENCY.ENABLED:
+        if self.model.frequency_fusion_enabled:
             keys.extend([
                 'frequency_image_proto', 'frequency_prompt_proto',
                 'frequency_description_proto', 'frequency_semantic_proto',
@@ -81,6 +83,8 @@ class Runner:
                 'frequency_class_alpha', 'frequency_reliability',
                 'raw_frequency_mean',
             ])
+        if self.model.consensus_enabled:
+            keys.extend(['raw_frequency_mean', 'frequency_consensus_text_proto'])
         result = {key: torch.cat([state[key] for state in dict_list]) for key in keys}
         weights = [len(state['class_index']) for state in dict_list]
         covariance = torch.zeros_like(dict_list[0]['cov_image'])
@@ -129,6 +133,8 @@ class Runner:
             'memory_protocol': 'class_visual_means_no_individual_feature_replay',
             'residual_input': 'original_clip_features',
             'dictionary': self.dictionary_report, 'sessions': self.sessions,
+            'consensus': self.consensus_report,
+            'image_encoding_counts': dict(self.model.image_encoding_counts),
             'summary': summarize_sessions(self.sessions) if self.sessions else None,
         }
         temporary = self.output_dir / 'metrics.json.tmp'
@@ -157,6 +163,8 @@ class Runner:
                                 'num_classes': head.codes.shape[0]} if head else None),
             'residual_state': _cpu_state(head.state_dict()) if head else None,
             'router_state': _cpu_state(router.state_dict()) if router else None,
+            'consensus_state': _cpu_state(self.model.consensus_state),
+            'consensus_calibration': self.consensus_report,
             'metrics': self.sessions,
         }
         # Boundary snapshot. Pretrained CLIP is identified, not duplicated.
@@ -179,12 +187,27 @@ class Runner:
                 task_id, source='train', mode='test', accumulate_past=False
             )
             start = time.perf_counter()
+            encoding_start = dict(self.model.image_encoding_counts)
             current = self.model.build_task_statistics(
                 names, loader, class_index=classes,
                 calibrate_novel_vision_proto=self.cfg.TRAINER.BiMC.VISION_CALIBRATION,
             )
             if self.model.frequency_router is not None:
                 self.model.frequency_router.eval().requires_grad_(False)
+            if task_id == 0 and self.model.consensus_enabled:
+                from engine.consensus_calibration import initialize_consensus
+                self.consensus_report = initialize_consensus(self.model, self.cfg, current)
+                if self.output_dir is not None:
+                    (self.output_dir / 'consensus_calibration.json').write_text(
+                        json.dumps(self.consensus_report, indent=2, allow_nan=False),
+                        encoding='utf-8',
+                    )
+                print('Frequency consensus calibration:', {
+                    key: self.consensus_report[key] for key in (
+                        'selected_lambda', 'scales', 'active_sources',
+                        'reference_accuracy', 'top2_recall', 'candidate_class_counts',
+                    )
+                })
             states.append(current)
             merged = self.merge_dicts(states)
             fit_report = None
@@ -198,6 +221,10 @@ class Runner:
             if str(self.device).startswith('cuda'):
                 torch.cuda.synchronize()
             fit_seconds = time.perf_counter() - start
+            support_encodings = {
+                key: self.model.image_encoding_counts[key] - encoding_start[key]
+                for key in encoding_start
+            }
 
             # Release sample-level image caches before proceeding to evaluation.
             for key in ('images_features', 'images_targets', 'frequency_features',
@@ -214,6 +241,7 @@ class Runner:
                 torch.cuda.synchronize()
             metrics['eval_seconds'] = time.perf_counter() - start
             metrics['fit_seconds'] = fit_seconds
+            metrics['support_image_encodings'] = support_encodings
             metrics['forgetting'] = compute_forgetting(metrics['task_acc'], self.sessions)
             metrics['fit'] = fit_report
             head_state = self.model.residual_head.state_dict() if self.model.residual_head else {}
@@ -227,6 +255,7 @@ class Runner:
             metrics['retained_tensor_bytes'] = _tensor_bytes([
                 states, head_state, router_state, self.model.base_vision_prototype,
                 getattr(self.model, 'base_frequency_vision_prototype', None),
+                self.model.consensus_state,
             ])
             self.sessions.append(metrics)
             self.acc_list.append(round(metrics['accuracy'], 3))
@@ -250,15 +279,33 @@ class Runner:
         )
         loader = self.data_manager.get_dataloader(task_id, source='test', mode='test')
         scores, references, targets = [], [], []
+        eligible_rows, encoded_rows, evidence_rows, sample_ids = [], [], [], []
+        encoding_start = dict(self.model.image_encoding_counts)
+        exact_reference = True
         for batch in tqdm(loader):
             images, labels = self.parse_batch(batch)
             features = self.model.extract_img_feature(images)
             frequency_features = (
                 self.model.extract_frequency_img_feature(images)
-                if self.model.frequency_enabled else None
+                if self.model.frequency_fusion_enabled else None
             )
             reference = scorer(features, frequency_features)
-            output = self.model.apply_incremental_residual(features, reference)
+            if self.model.consensus_enabled:
+                output, detail = self.model.apply_frequency_consensus(
+                    images, features, reference, state_dict['raw_frequency_mean'],
+                    state_dict['frequency_consensus_text_proto'],
+                )
+                eligible_rows.append(detail['eligible'].cpu())
+                encoded_rows.append(detail['encoded'].cpu())
+                evidence_rows.append(detail['evidence'].cpu())
+            else:
+                output = self.model.apply_incremental_residual(features, reference)
+            exact_reference = exact_reference and torch.equal(output, reference)
+            identifiers = batch.get('global_index', batch.get('sample_id'))
+            if identifiers is None:
+                offset = sum(len(item) for item in targets)
+                identifiers = torch.arange(offset, offset + len(labels))
+            sample_ids.append(torch.as_tensor(identifiers).cpu())
             scores.append(output.cpu())
             references.append(reference.cpu())
             targets.append(labels.cpu())
@@ -270,6 +317,36 @@ class Runner:
         )
         metrics['reference_accuracy'] = float(100 * np.mean(references.argmax(1) == targets))
         metrics['prediction_change_rate'] = float(100 * np.mean(scores.argmax(1) != references.argmax(1)))
+        eligible = torch.cat(eligible_rows).numpy() if eligible_rows else None
+        encoded = torch.cat(encoded_rows).numpy() if encoded_rows else None
+        metrics['prediction_diagnostics'] = prediction_diagnostics(
+            references, scores, targets, task_id, self.data_manager.class_index_in_task,
+            eligible=eligible, encoded=encoded,
+        )
+        metrics['reference_scores_exact_equal'] = exact_reference
+        metrics['query_original_encodings'] = (
+            self.model.image_encoding_counts['original'] - encoding_start['original']
+        )
+        metrics['query_auxiliary_encodings'] = (
+            self.model.image_encoding_counts['auxiliary'] - encoding_start['auxiliary']
+        )
+        if self.output_dir is not None and self.cfg.TRAINER.BiMC.CONSENSUS.SAVE_PREDICTIONS:
+            first = references.argmax(1)
+            remaining = references.copy()
+            remaining[np.arange(len(first)), first] = -np.inf
+            second = remaining.argmax(1)
+            pair_scores = references[np.arange(len(first))[:, None],
+                                     np.stack((first, second), axis=1)]
+            payload = {
+                'sample_id': torch.cat(sample_ids).numpy(), 'target': targets,
+                'reference_prediction': first, 'second_candidate': second,
+                'prediction': scores.argmax(1), 'reference_pair_scores': pair_scores,
+            }
+            if eligible is not None:
+                payload.update(eligible=eligible, encoded=encoded,
+                               evidence=torch.cat(evidence_rows).numpy())
+            np.savez_compressed(self.output_dir / f'predictions_session_{task_id:02d}.npz',
+                                **payload)
         return metrics
 
     def parse_batch(self, batch):

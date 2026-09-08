@@ -3,6 +3,8 @@ __pycache__/
 .vscode/
 outputs/
 .codex_tmp
-docs/
+docs/*
+!docs/frequency_consensus_validation.md
+!docs/frequency_consensus_reranking_design.md
 shared_dictionary_group_report*
 tools/*.local.ps1

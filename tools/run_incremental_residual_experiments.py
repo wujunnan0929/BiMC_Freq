@@ -301,7 +301,8 @@ def save_summary(path, args, rows, planned_runs):
     write_json(path, payload)
 
 
-def execute_plan(plan, args):
+def execute_plan(plan, args, summary_writer=None):
+    summary_writer = summary_writer or save_summary
     rows = []
     summary_path = Path(args.output_root).resolve() / "summary.json"
     failed = False
@@ -313,14 +314,14 @@ def execute_plan(plan, args):
             print("[{}/{}] skip completed {} seed={}".format(index, len(plan), run["variant"], run["seed"]), flush=True)
             row.update(status="skipped", summary=metrics["summary"])
             rows.append(row)
-            save_summary(summary_path, args, rows, len(plan))
+            summary_writer(summary_path, args, rows, len(plan))
             continue
         old_spec = read_json(output_dir / "run_spec.json")
         if isinstance(old_spec, dict) and old_spec.get("fingerprint") != run["fingerprint"] and not args.rerun:
             row.update(status="failed", error="Existing run has a different command, config or source fingerprint. Use a new --output-root or --rerun.")
             print(row["error"] + " " + str(output_dir), file=sys.stderr)
             rows.append(row)
-            save_summary(summary_path, args, rows, len(plan))
+            summary_writer(summary_path, args, rows, len(plan))
             failed = True
             if not args.keep_going:
                 break
@@ -363,7 +364,7 @@ def execute_plan(plan, args):
             failed = True
         write_json(output_dir / "run_state.json", state)
         rows.append(row)
-        save_summary(summary_path, args, rows, len(plan))
+        summary_writer(summary_path, args, rows, len(plan))
         if error is not None and not args.keep_going:
             break
     print("Summary: " + str(summary_path), flush=True)

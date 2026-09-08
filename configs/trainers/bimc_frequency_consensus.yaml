@@ -1,0 +1,62 @@
+SEED: 1
+DEVICE:
+  DEVICE_NAME: "cuda"
+  GPU_ID: "0;"
+DATALOADER:
+  TRAIN:
+    BATCH_SIZE_BASE: 64
+    BATCH_SIZE_INC: 64
+  TEST:
+    BATCH_SIZE: 100
+  NUM_WORKERS: 4
+MODEL:
+  BACKBONE:
+    NAME: "ViT-B/16"
+TRAINER:
+  BiMC:
+    # Small vote margins are sensitive to fp16 rounding. All matrix variants
+    # use fp32, including baseline/V2/router, for the primary paired experiment.
+    PREC: "fp32"
+    VISION_CALIBRATION: True
+    LAMBDA_I: 0.1
+    TAU: 16
+    TEXT_CALIBRATION: True
+    LAMBDA_T: 0.5
+    GAMMA_BASE: 1.0
+    GAMMA_INC: 5.0
+    USING_ENSEMBLE: True
+    RESIDUAL:
+      ENABLED: False
+      SAVE_CHECKPOINT: True
+    FREQUENCY:
+      # Extraction is enabled by CONSENSUS; legacy fusion remains disabled.
+      ENABLED: False
+      VIEW_MODE: "natural"
+      NOVEL_VISION_CALIBRATION: False
+      SEMANTIC_GATE_MODE: "attenuate"
+      FREQ_ALPHA: 0.20
+      RELIABILITY_ALPHA: True
+      # CUB first-stage validation uses the existing offline descriptions.
+      USE_EXPLICIT_DESCRIPTIONS: True
+      EXPLICIT_DESCRIPTION_PATH: "description/cub200_frequency_descriptions_deepseek.json"
+      ROUTER:
+        ENABLED: False
+    CONSENSUS:
+      ENABLED: True
+      MODE: "consensus"
+      VIEW_CONTROL: "frequency"
+      SEMANTIC_PERMUTATION: [0, 1, 2]
+      AUTO_CALIBRATE: True
+      LAMBDA: 0.0
+      LAMBDA_GRID: [0.0, 0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1]
+      SCALE_EPS: 0.0001
+      FIT_FRACTION: 0.5
+      FIT_EPISODES: 20
+      VAL_EPISODES: 20
+      OLD_WAY: 10
+      NEW_WAY: 5
+      STAGES: 2
+      OLD_SHOT: 20
+      SHOT: 5
+      QUERY: 5
+      SAVE_PREDICTIONS: True

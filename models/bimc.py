@@ -62,7 +62,19 @@ class BiMC(nn.Module):
         self.text_proto = None
         self.description_proto = None
         self.vision_proto = None
-        self.frequency_enabled = cfg.TRAINER.BiMC.FREQUENCY.ENABLED
+        self.consensus_enabled = cfg.TRAINER.BiMC.CONSENSUS.ENABLED
+        self.consensus_state = None
+        self.frequency_fusion_enabled = cfg.TRAINER.BiMC.FREQUENCY.ENABLED
+        self.frequency_enabled = self.frequency_fusion_enabled or self.consensus_enabled
+        self.image_encoding_counts = {'original': 0, 'auxiliary': 0}
+        if self.consensus_enabled:
+            if self.frequency_fusion_enabled or cfg.TRAINER.BiMC.FREQUENCY.ROUTER.ENABLED:
+                raise ValueError('CONSENSUS requires legacy FREQUENCY fusion/router disabled.')
+            if cfg.TRAINER.BiMC.RESIDUAL.ENABLED:
+                raise ValueError('CONSENSUS and RESIDUAL cannot be enabled together.')
+            if cfg.TRAINER.BiMC.CONSENSUS.VIEW_CONTROL not in (
+                    'frequency', 'original', 'augmentation'):
+                raise ValueError('CONSENSUS.VIEW_CONTROL must be frequency, original, or augmentation.')
         self.frequency_decomposer = None
         self.frequency_router = None
         if self.frequency_enabled:
@@ -272,13 +284,13 @@ class BiMC(nn.Module):
         all_frequency_features = []
         for batch in loader:
             images, labels = self.parse_batch(batch)
-            features = self.clip_model.encode_image(images)
-            features = F.normalize(features, dim=-1)
+            raw_features = self.extract_img_feature(images)
+            features = F.normalize(raw_features, dim=-1)
             all_features.append(features)
             all_labels.append(labels)
             if self.frequency_enabled:
                 all_frequency_features.append(
-                    self.extract_frequency_img_feature(images)
+                    self.extract_frequency_img_feature(images, original_features=raw_features)
                 )
         all_features = torch.cat(all_features, dim=0)
         all_labels = torch.cat(all_labels, dim=0)
@@ -757,7 +769,7 @@ class BiMC(nn.Module):
                 print(f'calibrate vision proto on class [{class_index}]')
                 images_proto = self.soft_calibration(self.base_vision_prototype, images_proto)
                 if (
-                    self.frequency_enabled
+                    self.frequency_fusion_enabled
                     and self.cfg.TRAINER.BiMC.FREQUENCY.NOVEL_VISION_CALIBRATION
                 ):
                     print('calibrate low/middle/high visual prototypes independently')
@@ -772,11 +784,11 @@ class BiMC(nn.Module):
                     frequency_image_proto = torch.stack(calibrated_bands, dim=1)
         else:
             self.base_vision_prototype = images_proto
-            if self.frequency_enabled:
+            if self.frequency_fusion_enabled:
                 self.base_frequency_vision_prototype = frequency_image_proto
 
         frequency_state = {}
-        if self.frequency_enabled:
+        if self.frequency_fusion_enabled:
             frequency_cfg = self.cfg.TRAINER.BiMC.FREQUENCY
             frequency_prompt_proto = self.inference_frequency_text_feature(class_names)
             if frequency_cfg.USE_EXPLICIT_DESCRIPTIONS:
@@ -903,6 +915,23 @@ class BiMC(nn.Module):
                     frequency_semantic_proto=frequency_semantic_proto[router_positions],
                 )
 
+        if self.consensus_enabled:
+            frequency_cfg = self.cfg.TRAINER.BiMC.FREQUENCY
+            if frequency_cfg.USE_EXPLICIT_DESCRIPTIONS:
+                frequency_description_candidates = (
+                    self.inference_explicit_frequency_description_candidates(
+                        class_names, frequency_cfg.EXPLICIT_DESCRIPTION_PATH,
+                    )
+                )
+                # No visual top-k grounding: preserve the two sources of evidence.
+                consensus_text = F.normalize(
+                    frequency_description_candidates.float().mean(dim=2), dim=-1,
+                )
+            else:
+                # Non-CUB fallback reuses the existing keyword-routed descriptions.
+                consensus_text = F.normalize(frequency_description_proto.float(), dim=-1)
+            frequency_state = {'frequency_consensus_text_proto': consensus_text}
+
 
         cov_images = torch.cov(images_features.T)
 
@@ -954,11 +983,13 @@ class BiMC(nn.Module):
                            beta,
                            frequency_proto=None,
                            frequency_band_weights=None,
-                           frequency_class_alpha=None):
+                           frequency_class_alpha=None,
+                           consensus_visual_proto=None,
+                           consensus_text_proto=None):
         image_features = self.extract_img_feature(images)
         frequency_features = (
             self.extract_frequency_img_feature(images)
-            if self.frequency_enabled else None
+            if self.frequency_fusion_enabled else None
         )
         reference = self.reference_scores_from_features(
             image_features, num_cls, num_base_cls, image_proto, cov_image,
@@ -966,7 +997,49 @@ class BiMC(nn.Module):
             text_features, beta, frequency_proto, frequency_band_weights,
             frequency_class_alpha, frequency_features,
         )
+        if self.consensus_enabled:
+            if consensus_visual_proto is None or consensus_text_proto is None:
+                raise ValueError('Consensus forward requires raw visual and pure text prototypes.')
+            return self.apply_frequency_consensus(
+                images, image_features, reference, consensus_visual_proto, consensus_text_proto,
+            )[0]
         return self.apply_incremental_residual(image_features, reference)
+
+    @torch.no_grad()
+    def apply_frequency_consensus(self, images, image_features, reference_scores,
+                                  visual_prototypes, text_prototypes):
+        """Compute auxiliary views only where bounded evidence can change top-1."""
+        from models.frequency_consensus import pair_candidates, rerank_frequency_consensus
+
+        if self.consensus_state is None:
+            raise RuntimeError('Initialize consensus with base-only calibration before inference.')
+        state = self.consensus_state
+        strength = float(state['lambda'])
+        _, _, gap = pair_candidates(reference_scores)
+        eligible = gap < strength
+        detail = {
+            'eligible': eligible, 'encoded': torch.zeros_like(eligible),
+            # NaN explicitly means uncomputed, not zero/disagreeing evidence.
+            'evidence': gap.new_full(gap.shape, float('nan')),
+        }
+        if strength == 0 or not eligible.any():
+            return reference_scores, detail
+        auxiliary_before = self.image_encoding_counts['auxiliary']
+        frequency = self.extract_frequency_img_feature(
+            images[eligible], original_features=image_features[eligible],
+        )
+        if self.image_encoding_counts['auxiliary'] > auxiliary_before:
+            detail['encoded'][eligible] = True
+        reranked, active_detail = rerank_frequency_consensus(
+            reference_scores[eligible], frequency, visual_prototypes, text_prototypes,
+            state['scales'], strength=strength,
+            mode=self.cfg.TRAINER.BiMC.CONSENSUS.MODE,
+            permutation=self.cfg.TRAINER.BiMC.CONSENSUS.SEMANTIC_PERMUTATION,
+        )
+        output = reference_scores.to(reranked.dtype).clone()
+        output[eligible] = reranked
+        detail['evidence'][eligible] = active_detail['evidence']
+        return output, detail
 
     def apply_incremental_residual(self, image_features, reference_scores):
         """Keep the original output exactly when the residual is disabled/zero."""
@@ -1053,7 +1126,7 @@ class BiMC(nn.Module):
         logits_proto_fused = img_feat @ fused_proto.t()
         prob_fused_proto = F.softmax(logits_proto_fused, dim=-1)
 
-        if self.frequency_enabled:
+        if self.frequency_fusion_enabled:
             if frequency_proto is None or frequency_band_weights is None:
                 raise ValueError(
                     "Frequency mode requires calibrated prototypes and band weights."
@@ -1125,23 +1198,48 @@ class BiMC(nn.Module):
     def extract_img_feature(self, images):
         images = images.to(self.device)
         image_features = self.clip_model.encode_image(images)
+        self.image_encoding_counts['original'] += len(images)
         return image_features
 
 
     @torch.no_grad()
-    def extract_frequency_img_feature(self, images):
+    def extract_frequency_img_feature(self, images, original_features=None):
         """Encode low/middle/high filtered images with the frozen CLIP model."""
         if not self.frequency_enabled or self.frequency_decomposer is None:
             raise RuntimeError("Frequency feature extraction is not enabled.")
         images = images.to(self.device)
-        if self.frequency_decomposer.view_mode == "original":
-            features = F.normalize(self.clip_model.encode_image(images), dim=-1)
+        control = (self.cfg.TRAINER.BiMC.CONSENSUS.VIEW_CONTROL
+                   if self.consensus_enabled else 'frequency')
+        if control == 'original' or (
+                control == 'frequency' and self.frequency_decomposer.view_mode == "original"):
+            if original_features is None:
+                original_features = self.clip_model.encode_image(images)
+                self.image_encoding_counts['auxiliary'] += len(images)
+            features = F.normalize(original_features, dim=-1)
             return features.unsqueeze(1).expand(-1, 3, -1)
-        band_images = self.frequency_decomposer(images)
+        if control == 'augmentation':
+            # Deterministic ordinary views, with the same three-encoder budget.
+            # These are generic multi-view controls, not energy-matched interventions.
+            height, width = images.shape[-2:]
+            top, left = max(1, height // 20), max(1, width // 20)
+            crop = F.interpolate(
+                images[:, :, top:height-top, left:width-left].float(),
+                size=(height, width), mode='bilinear', align_corners=False,
+            ).to(images.dtype)
+            mean = self.frequency_decomposer.mean.to(images)
+            std = self.frequency_decomposer.std.to(images)
+            pixels = images * std + mean
+            gray = (pixels * images.new_tensor([0.2989, 0.5870, 0.1140])
+                    .view(1, 3, 1, 1)).sum(1, keepdim=True).expand_as(pixels)
+            gray = (gray - mean) / std
+            band_images = torch.stack((images.flip(-1), crop, gray), dim=1)
+        else:
+            band_images = self.frequency_decomposer(images)
         band_features = []
         # Encode each band separately to keep peak memory close to baseline.
         for band_id in range(band_images.shape[1]):
             features = self.clip_model.encode_image(band_images[:, band_id])
+            self.image_encoding_counts['auxiliary'] += len(images)
             band_features.append(F.normalize(features, dim=-1))
         return torch.stack(band_features, dim=1)
 
