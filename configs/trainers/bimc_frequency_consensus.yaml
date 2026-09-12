@@ -47,6 +47,8 @@ TRAINER:
       VIEW_CONTROL: "frequency"
       SEMANTIC_PERMUTATION: [0, 1, 2]
       AUTO_CALIBRATE: True
+      OBJECTIVE: "micro_all"
+      MAX_GROUP_DROP_PP: -1.0
       LAMBDA: 0.0
       LAMBDA_GRID: [0.0, 0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1]
       SCALE_EPS: 0.0001

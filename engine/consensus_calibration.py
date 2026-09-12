@@ -15,6 +15,22 @@ from engine.residual_training import _group_covariance, make_reference_scorer
 from models.frequency_consensus import (
     MODES, bounded_evidence, fit_margin_scales, pairwise_margins, rerank_with_evidence,
 )
+from utils.consensus_selection import OBJECTIVES, score_candidate, select_lambda, summarize_counts
+
+
+def _empty_counts():
+    return dict.fromkeys(('count', 'correct', 'reference_correct', 'corrected',
+                          'damaged', 'wrong_to_wrong', 'changed', 'eligible', 'top2_hits'), 0)
+
+
+def _accumulate(counts, mask, before, after, changed, eligible, top2_hit):
+    values = {'count': mask, 'correct': after & mask, 'reference_correct': before & mask,
+              'corrected': ~before & after & mask, 'damaged': before & ~after & mask,
+              'wrong_to_wrong': ~before & ~after & changed & mask,
+              'changed': changed & mask, 'eligible': eligible & mask,
+              'top2_hits': top2_hit & mask}
+    for key, value in values.items():
+        counts[key] += int(value.sum())
 
 
 def build_support_reference(model, cfg, base_state, support_indices, selected_ids,
@@ -124,6 +140,11 @@ def initialize_consensus(model, cfg, base_state):
         raise ValueError('Calibration requires a plain BiMC candidate reference.')
     if settings.MODE not in MODES or sorted(settings.SEMANTIC_PERMUTATION) != [0, 1, 2]:
         raise ValueError('Invalid consensus mode or semantic permutation.')
+    if settings.OBJECTIVE not in OBJECTIVES:
+        raise ValueError('Invalid consensus calibration OBJECTIVE.')
+    if (not math.isfinite(settings.MAX_GROUP_DROP_PP)
+            or (settings.MAX_GROUP_DROP_PP < 0 and settings.MAX_GROUP_DROP_PP != -1)):
+        raise ValueError('MAX_GROUP_DROP_PP must be -1 or finite nonnegative.')
     for key in ('FIT_EPISODES', 'VAL_EPISODES', 'OLD_WAY', 'NEW_WAY', 'OLD_SHOT',
                 'SHOT', 'QUERY', 'STAGES'):
         if getattr(settings, key) < 1:
@@ -166,6 +187,13 @@ def initialize_consensus(model, cfg, base_state):
     totals = {value: {'correct': 0, 'corrected': 0, 'damaged': 0,
                       'old_corrected': 0, 'old_damaged': 0,
                       'new_corrected': 0, 'new_damaged': 0} for value in evaluated_grid}
+    stage_totals = {
+        value: [{'stage': stage,
+                 'candidate_classes': settings.OLD_WAY + stage * settings.NEW_WAY,
+                 'groups': {name: _empty_counts() for name in
+                            ('all', 'old', 'new', 'historical_incremental', 'current_new')}}
+                for stage in range(settings.STAGES + 1)] for value in evaluated_grid
+    }
     count = top2_hits = reference_correct = 0
     from models.frequency_consensus import pair_candidates
     for sequence in val_sequences:
@@ -174,14 +202,25 @@ def initialize_consensus(model, cfg, base_state):
             first, second, _ = pair_candidates(scores)
             before = first == targets
             old = targets < settings.OLD_WAY
+            stage = record['stage']
+            current = ((targets >= settings.OLD_WAY + (stage - 1) * settings.NEW_WAY)
+                       & ~old) if stage else torch.zeros_like(old)
+            masks = {'all': torch.ones_like(old), 'old': old, 'new': ~old,
+                     'historical_incremental': ~old & ~current, 'current_new': current}
+            top2_hit = before | (second == targets)
             count += len(targets)
             reference_correct += int(before.sum())
-            top2_hits += int((before | (second == targets)).sum())
+            top2_hits += int(top2_hit.sum())
             evidence = bounded_evidence(record['visual_margin'], record['semantic_margin'],
                                         scales, settings.MODE)
             for strength in evaluated_grid:
-                output, _ = rerank_with_evidence(scores, evidence, strength)
-                after = output.argmax(1) == targets
+                output, detail = rerank_with_evidence(scores, evidence, strength)
+                prediction = output.argmax(1)
+                after = prediction == targets
+                changed = prediction != first
+                for name, mask in masks.items():
+                    _accumulate(stage_totals[strength][stage]['groups'][name], mask,
+                                before, after, changed, detail['eligible'], top2_hit)
                 corrected, damaged = ~before & after, before & ~after
                 values = totals[strength]
                 values['correct'] += int(after.sum())
@@ -190,14 +229,32 @@ def initialize_consensus(model, cfg, base_state):
                 for name, mask in (('old', old), ('new', ~old)):
                     values[name + '_corrected'] += int((corrected & mask).sum())
                     values[name + '_damaged'] += int((damaged & mask).sum())
-    strength = (min(grid, key=lambda value: (-totals[value]['correct'], value))
+    candidates = []
+    for value, values in totals.items():
+        stages = stage_totals[value]
+        for stage in stages:
+            stage['groups'] = {name: summarize_counts(counts)
+                               for name, counts in stage['groups'].items()}
+        candidates.append({'lambda': value, 'accuracy': 100 * values['correct'] / count,
+                           **values, 'stages': stages,
+                           'selection': score_candidate(stages, settings.OBJECTIVE,
+                                                        settings.MAX_GROUP_DROP_PP)})
+    grid_candidates = [candidate for candidate in candidates if candidate['lambda'] in grid]
+    strength = (select_lambda(grid_candidates, settings.OBJECTIVE, settings.MAX_GROUP_DROP_PP)
                 if settings.AUTO_CALIBRATE else float(settings.LAMBDA))
     model.consensus_state = {'scales': scales, 'lambda': strength,
                              'mode': settings.MODE,
                              'semantic_permutation': list(settings.SEMANTIC_PERMUTATION)}
     audit = {'fit_sequences': fit_sequences, 'validation_sequences': val_sequences}
     return {
-        'schema_version': 1, 'data_source': 'base_training_only', 'seed': seed,
+        'schema_version': 2, 'data_source': 'base_training_only', 'seed': seed,
+        'run_seed': int(cfg.SEED),
+        'selection_objective': settings.OBJECTIVE,
+        'max_group_drop_pp': settings.MAX_GROUP_DROP_PP,
+        'selection_audit': {
+            objective: select_lambda(grid_candidates, objective) for objective in OBJECTIVES
+        },
+        'balanced_safe_lambda': select_lambda(grid_candidates, 'balanced_incremental', 0.0),
         'fit_class_ids': fit_ids, 'validation_class_ids': val_ids,
         'fit_query_occurrences': fit_query_occurrences, 'validation_query_occurrences': count,
         'selected_lambda': strength, 'auto_calibrate': settings.AUTO_CALIBRATE,
@@ -206,8 +263,7 @@ def initialize_consensus(model, cfg, base_state):
         'semantic_permutation': list(settings.SEMANTIC_PERMUTATION),
         'reference_accuracy': 100 * reference_correct / count,
         'top2_recall': 100 * top2_hits / count,
-        'candidate_results': [{'lambda': value, 'accuracy': 100 * values['correct'] / count,
-                               **values} for value, values in totals.items()],
+        'candidate_results': candidates,
         'candidate_class_counts': [settings.OLD_WAY + step * settings.NEW_WAY
                                    for step in range(settings.STAGES + 1)],
         'limitation': 'Pseudo sequences have fewer candidates than the full benchmark; '

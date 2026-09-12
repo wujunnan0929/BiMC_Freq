@@ -1,4 +1,5 @@
 import copy
+import json
 import unittest
 
 import torch
@@ -9,6 +10,7 @@ from engine.consensus_calibration import (
 )
 from test_consensus_integration import consensus_config
 from test_residual_integration import make_model, synthetic_state
+from tools.analyze_consensus_calibration import inspect_report
 
 
 def calibration_state():
@@ -20,6 +22,44 @@ def calibration_state():
 
 
 class ConsensusCalibrationTest(unittest.TestCase):
+    def test_selection_only_changes_lambda_with_identical_scales_and_sequences(self):
+        reports = []
+        for objective, guard in (('micro_all', -1.), ('micro_incremental', -1.),
+                                 ('balanced_incremental', -1.), ('balanced_incremental', 0.)):
+            cfg = consensus_config()
+            cfg.defrost()
+            cfg.TRAINER.BiMC.CONSENSUS.AUTO_CALIBRATE = True
+            cfg.TRAINER.BiMC.CONSENSUS.OBJECTIVE = objective
+            cfg.TRAINER.BiMC.CONSENSUS.MAX_GROUP_DROP_PP = guard
+            cfg.freeze()
+            report = initialize_consensus(make_model(cfg), cfg, calibration_state())
+            self.assertEqual(report['selected_lambda'], report['balanced_safe_lambda'] if guard == 0
+                             else report['selection_audit'][objective])
+            json.dumps(report, allow_nan=False)
+            inspect_report(report)
+            reports.append(report)
+        for report in reports[1:]:
+            self.assertEqual(report['scales'], reports[0]['scales'])
+            self.assertEqual(report['protocol_sha256'], reports[0]['protocol_sha256'])
+        legacy = reports[0]
+        self.assertEqual(legacy['selected_lambda'], min(legacy['candidate_results'], key=lambda row:
+                         (-row['correct'], row['lambda']))['lambda'])
+        for candidate in legacy['candidate_results']:
+            self.assertEqual(candidate['correct'], sum(s['groups']['all']['correct']
+                                                       for s in candidate['stages']))
+            self.assertEqual(candidate['old_damaged'], sum(s['groups']['old']['damaged']
+                                                           for s in candidate['stages']))
+            for stage in candidate['stages']:
+                groups = stage['groups']
+                self.assertEqual(groups['all']['count'], groups['old']['count']+groups['new']['count'])
+                self.assertEqual(groups['new']['count'], groups['historical_incremental']['count']
+                                 + groups['current_new']['count'])
+                for group in groups.values():
+                    self.assertEqual(group['correct'] - group['reference_correct'],
+                                     group['corrected'] - group['damaged'])
+                    self.assertEqual(group['changed'], group['corrected'] + group['damaged']
+                                     + group['wrong_to_wrong'])
+
     def test_disjoint_classes_samples_and_initialization_only_once(self):
         cfg = consensus_config()
         model, state = make_model(cfg), calibration_state()

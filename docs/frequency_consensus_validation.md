@@ -1,5 +1,9 @@
 # 频率共识验证实验：实现与 Ubuntu 执行
 
+> 2026-09-13 更新：完整 core 结果后的校准消融、固定强度对照及新执行命令见
+> [后续实验说明](frequency_consensus_followup.md)。原默认校准规则保持不变；代码更新后
+> 不应在旧输出目录直接续跑，应使用新目录保留实验版本。
+
 日期：2026-09-08。分支：`codex/frequency-consensus-validation`。
 本轮实现可行性与机制对照，不代表已经取得 benchmark 性能提升。
 

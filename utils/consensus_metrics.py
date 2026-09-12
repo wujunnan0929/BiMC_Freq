@@ -56,6 +56,20 @@ def prediction_diagnostics(reference, output, targets, task_id, class_groups,
         result['base_to_all_incremental_' + name + '_rate'] = (
             float(100 * np.isin(values[base], seen_incremental).mean()) if base.any() else None
         )
+        for group in ('historical_incremental', 'current_new'):
+            mask = masks[group]
+            result[group + '_to_base_' + name + '_rate'] = (
+                float(100 * np.isin(values[mask], class_groups[0]).mean()) if mask.any() else None
+            )
+    # Where a previously correct prediction goes after reranking, by true group.
+    # These are diagnostic counts only; labels never enter the inference rule.
+    destinations = {'base': class_groups[0], 'historical_incremental': history_ids,
+                    'current_new': class_groups[task_id] if task_id else []}
+    result['damaged_prediction_destinations'] = {
+        source: {destination: int((mask & before & ~after & np.isin(prediction, ids)).sum())
+                 for destination, ids in destinations.items()}
+        for source, mask in masks.items() if source != 'all'
+    }
     result['prediction_outside_reference_top2_count'] = int(
         ((prediction != first) & (prediction != second)).sum()
     )

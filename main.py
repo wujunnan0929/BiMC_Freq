@@ -114,6 +114,8 @@ def extend_cfg(cfg):
     consensus.VIEW_CONTROL = 'frequency'  # frequency, original, augmentation
     consensus.SEMANTIC_PERMUTATION = [0, 1, 2]
     consensus.AUTO_CALIBRATE = True
+    consensus.OBJECTIVE = 'micro_all'  # legacy; micro_incremental, balanced_incremental
+    consensus.MAX_GROUP_DROP_PP = -1.0  # -1 disables the base-validation group guard
     consensus.LAMBDA = 0.0
     consensus.LAMBDA_GRID = [0.0, 0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1]
     consensus.SCALE_EPS = 1e-4
