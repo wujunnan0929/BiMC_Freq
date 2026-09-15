@@ -34,7 +34,7 @@ def _accumulate(counts, mask, before, after, changed, eligible, top2_hit):
 
 
 def build_support_reference(model, cfg, base_state, support_indices, selected_ids,
-                            old_way, new_way):
+                            old_way, new_way, include_frequency=True):
     """Build the same class-weighted per-session covariance as the real runner."""
     features = base_state['images_features'].detach().float()
     labels = base_state['images_targets'].long()
@@ -51,7 +51,8 @@ def build_support_reference(model, cfg, base_state, support_indices, selected_id
         if not mask.any():
             raise ValueError('Every episode class needs its own support.')
         means.append(support[mask].mean(0))
-        frequency_means.append(base_state['frequency_features'][support_indices[mask]].float().mean(0))
+        if include_frequency:
+            frequency_means.append(base_state['frequency_features'][support_indices[mask]].float().mean(0))
     prototypes = F.normalize(torch.stack(means), dim=-1)
     if len(selected_ids) > old_way and cfg.TRAINER.BiMC.VISION_CALIBRATION:
         prototypes[old_way:] = model.soft_calibration(prototypes[:old_way], prototypes[old_way:])
@@ -79,8 +80,9 @@ def build_support_reference(model, cfg, base_state, support_indices, selected_id
         'description_targets': torch.cat(description_labels),
     }
     return (make_reference_scorer(model, cfg, reference_state, old_way),
-            F.normalize(torch.stack(frequency_means), dim=-1),
-            base_state['frequency_consensus_text_proto'][local_positions].float(), reference_state)
+            F.normalize(torch.stack(frequency_means), dim=-1) if include_frequency else None,
+            base_state['frequency_consensus_text_proto'][local_positions].float()
+            if include_frequency else None, reference_state)
 
 
 def sample_sequence(labels, class_ids, settings, generator):

@@ -131,6 +131,32 @@ def extend_cfg(cfg):
     consensus.STAGES = 2
     consensus.SAVE_PREDICTIONS = True
 
+    # Gradient-free diagonal predictive uncertainty, independent of legacy fusion.
+    cfg.TRAINER.BiMC.UNCERTAINTY = CN()
+    uncertainty = cfg.TRAINER.BiMC.UNCERTAINTY
+    uncertainty.ENABLED = False
+    uncertainty.VIEW_CONTROL = 'frequency'  # frequency or single original feature
+    uncertainty.COVARIANCE = 'shrinkage'  # shrinkage or pooled shared variance
+    uncertainty.PRIOR_STRENGTH = 20.0
+    uncertainty.PRIOR_GRID = [5.0, 20.0, 100.0]
+    uncertainty.VAR_FLOOR = 1e-6
+    uncertainty.MEAN_UNCERTAINTY = True
+    uncertainty.AUTO_CALIBRATE = True
+    uncertainty.ALPHA = 0.1
+    uncertainty.ALPHA_GRID = [0.0, 0.05, 0.1, 0.2]
+    uncertainty.TEMPERATURE = 1.0
+    uncertainty.TEMPERATURE_GRID = [0.1, 0.3, 1.0]
+    uncertainty.FIT_FRACTION = 0.5
+    uncertainty.VAL_EPISODES = 20
+    uncertainty.OLD_WAY = 10
+    uncertainty.NEW_WAY = 5
+    uncertainty.STAGES = 2
+    uncertainty.OLD_SHOT = 20
+    uncertainty.SHOT = 5
+    uncertainty.QUERY = 5
+    uncertainty.CALIBRATION_SEED = -1  # run seed + 10101
+    uncertainty.BASE_ONLY = False
+
     # Frequency-aware prototype calibration.  The legacy path is training-free;
     # an optional base-session residual router can be enabled below.  Frequency
     # mode defaults to off so existing BiMC configs reproduce the original method.

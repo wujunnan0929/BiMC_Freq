@@ -61,6 +61,7 @@ class Runner:
         self.sessions = []
         self.dictionary_report = None
         self.consensus_report = None
+        self.uncertainty_report = None
         self.output_dir = Path(cfg.OUTPUT_DIR) if cfg.OUTPUT_DIR else None
         if self.output_dir is not None:
             self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -86,6 +87,11 @@ class Runner:
         if self.model.consensus_enabled:
             keys.extend(['raw_frequency_mean', 'frequency_consensus_text_proto'])
         result = {key: torch.cat([state[key] for state in dict_list]) for key in keys}
+        if self.model.uncertainty_enabled:
+            result['uncertainty_statistics'] = {
+                key: torch.cat([state['uncertainty_statistics'][key] for state in dict_list])
+                for key in ('mean', 'variance', 'count')
+            }
         weights = [len(state['class_index']) for state in dict_list]
         covariance = torch.zeros_like(dict_list[0]['cov_image'])
         for weight, state in zip(weights, dict_list):
@@ -134,9 +140,12 @@ class Runner:
             'residual_input': 'original_clip_features',
             'dictionary': self.dictionary_report, 'sessions': self.sessions,
             'consensus': self.consensus_report,
+            'uncertainty': self.uncertainty_report,
             'image_encoding_counts': dict(self.model.image_encoding_counts),
             'summary': summarize_sessions(self.sessions) if self.sessions else None,
         }
+        if self.model.uncertainty_enabled:
+            payload['memory_protocol'] = 'class_means_diagonal_variances_counts_no_individual_feature_replay'
         temporary = self.output_dir / 'metrics.json.tmp'
         temporary.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False),
@@ -165,6 +174,8 @@ class Runner:
             'router_state': _cpu_state(router.state_dict()) if router else None,
             'consensus_state': _cpu_state(self.model.consensus_state),
             'consensus_calibration': self.consensus_report,
+            'uncertainty_state': _cpu_state(self.model.uncertainty_state),
+            'uncertainty_calibration': self.uncertainty_report,
             'metrics': self.sessions,
         }
         # Boundary snapshot. Pretrained CLIP is identified, not duplicated.
@@ -178,6 +189,8 @@ class Runner:
         if (self.cfg.TRAINER.BiMC.RESIDUAL.BASE_ONLY
                 and not self.cfg.TRAINER.BiMC.RESIDUAL.ENABLED):
             raise ValueError('BASE_ONLY requires residual dictionary learning enabled.')
+        if self.cfg.TRAINER.BiMC.UNCERTAINTY.BASE_ONLY and not self.model.uncertainty_enabled:
+            raise ValueError('UNCERTAINTY.BASE_ONLY requires UNCERTAINTY.ENABLED.')
         self._write_results('running')
         for task_id in range(self.data_manager.num_tasks):
             self.model.eval()
@@ -208,6 +221,18 @@ class Runner:
                         'reference_accuracy', 'top2_recall', 'candidate_class_counts',
                     )
                 })
+            if task_id == 0 and self.model.uncertainty_enabled:
+                from engine.uncertainty_calibration import initialize_uncertainty
+                self.uncertainty_report = initialize_uncertainty(self.model, self.cfg, current)
+                if self.output_dir is not None:
+                    (self.output_dir / 'uncertainty_calibration.json').write_text(
+                        json.dumps(self.uncertainty_report, indent=2, allow_nan=False),
+                        encoding='utf-8',
+                    )
+                print('Frequency uncertainty calibration:', {
+                    key: self.model.uncertainty_state[key]
+                    for key in ('alpha', 'temperature', 'prior_strength', 'covariance')
+                })
             states.append(current)
             merged = self.merge_dicts(states)
             fit_report = None
@@ -228,9 +253,10 @@ class Runner:
 
             # Release sample-level image caches before proceeding to evaluation.
             for key in ('images_features', 'images_targets', 'frequency_features',
-                        'frequency_description_candidates'):
+                        'frequency_description_candidates', 'uncertainty_features'):
                 current.pop(key, None)
-            if self.cfg.TRAINER.BiMC.RESIDUAL.BASE_ONLY:
+            if (self.cfg.TRAINER.BiMC.RESIDUAL.BASE_ONLY
+                    or self.cfg.TRAINER.BiMC.UNCERTAINTY.BASE_ONLY):
                 self._save_checkpoint(task_id, states)
                 self._write_results('base_validation_completed')
                 print('Base-only validation complete; no benchmark test images were evaluated.')
@@ -256,6 +282,7 @@ class Runner:
                 states, head_state, router_state, self.model.base_vision_prototype,
                 getattr(self.model, 'base_frequency_vision_prototype', None),
                 self.model.consensus_state,
+                self.model.uncertainty_state,
             ])
             self.sessions.append(metrics)
             self.acc_list.append(round(metrics['accuracy'], 3))
@@ -298,6 +325,10 @@ class Runner:
                 eligible_rows.append(detail['eligible'].cpu())
                 encoded_rows.append(detail['encoded'].cpu())
                 evidence_rows.append(detail['evidence'].cpu())
+            elif self.model.uncertainty_enabled:
+                output = self.model.apply_frequency_uncertainty(
+                    images, features, reference, state_dict['uncertainty_statistics'],
+                )
             else:
                 output = self.model.apply_incremental_residual(features, reference)
             exact_reference = exact_reference and torch.equal(output, reference)

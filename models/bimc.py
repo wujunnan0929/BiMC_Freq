@@ -64,9 +64,22 @@ class BiMC(nn.Module):
         self.vision_proto = None
         self.consensus_enabled = cfg.TRAINER.BiMC.CONSENSUS.ENABLED
         self.consensus_state = None
+        self.uncertainty_enabled = cfg.TRAINER.BiMC.UNCERTAINTY.ENABLED
+        self.uncertainty_state = None
         self.frequency_fusion_enabled = cfg.TRAINER.BiMC.FREQUENCY.ENABLED
-        self.frequency_enabled = self.frequency_fusion_enabled or self.consensus_enabled
+        self.frequency_enabled = (self.frequency_fusion_enabled or self.consensus_enabled
+                                  or (self.uncertainty_enabled
+                                      and cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL == 'frequency'))
         self.image_encoding_counts = {'original': 0, 'auxiliary': 0}
+        if self.uncertainty_enabled:
+            if (self.frequency_fusion_enabled or self.consensus_enabled
+                    or cfg.TRAINER.BiMC.FREQUENCY.ROUTER.ENABLED
+                    or cfg.TRAINER.BiMC.RESIDUAL.ENABLED):
+                raise ValueError('UNCERTAINTY requires legacy fusion, router, consensus and residual disabled.')
+            if cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL not in ('frequency', 'original'):
+                raise ValueError('UNCERTAINTY.VIEW_CONTROL must be frequency or original.')
+            if cfg.TRAINER.BiMC.UNCERTAINTY.COVARIANCE not in ('shrinkage', 'shared'):
+                raise ValueError('UNCERTAINTY.COVARIANCE must be shrinkage or shared.')
         if self.consensus_enabled:
             if self.frequency_fusion_enabled or cfg.TRAINER.BiMC.FREQUENCY.ROUTER.ENABLED:
                 raise ValueError('CONSENSUS requires legacy FREQUENCY fusion/router disabled.')
@@ -93,6 +106,7 @@ class BiMC(nn.Module):
                 raise ValueError("DESCRIPTION_TEMPERATURE must be positive.")
             if (
                 frequency_cfg.USE_EXPLICIT_DESCRIPTIONS
+                and (self.frequency_fusion_enabled or self.consensus_enabled)
                 and not frequency_cfg.EXPLICIT_DESCRIPTION_PATH
             ):
                 raise ValueError(
@@ -369,7 +383,7 @@ class BiMC(nn.Module):
             description_embeddings.append(text_features)
             all_targets.append(targets)
             if (
-                self.frequency_enabled
+                (self.frequency_fusion_enabled or self.consensus_enabled)
                 and not self.cfg.TRAINER.BiMC.FREQUENCY.USE_EXPLICIT_DESCRIPTIONS
             ):
                 frequency_cfg = self.cfg.TRAINER.BiMC.FREQUENCY
@@ -388,7 +402,7 @@ class BiMC(nn.Module):
         mean_embeddings = torch.cat(mean_embeddings, dim=0)
         mean_embeddings = F.normalize(mean_embeddings, dim=-1)
         if (
-            self.frequency_enabled
+            (self.frequency_fusion_enabled or self.consensus_enabled)
             and not self.cfg.TRAINER.BiMC.FREQUENCY.USE_EXPLICIT_DESCRIPTIONS
         ):
             frequency_description_embeddings = torch.stack(
@@ -961,7 +975,19 @@ class BiMC(nn.Module):
         }
         state.update(frequency_state)
         state['raw_image_mean'] = raw_image_mean
-        if all_frequency_features is not None:
+        if self.uncertainty_enabled:
+            from models.frequency_uncertainty import class_statistics
+            uncertainty_features = (
+                all_frequency_features if self.cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL == 'frequency'
+                else images_features.float().unsqueeze(1)
+            )
+            state['uncertainty_statistics'] = class_statistics(
+                uncertainty_features, images_targets, class_index,
+            )
+            # Base calibration consumes this cache; only sufficient statistics
+            # survive a session boundary, including for historical novel classes.
+            state['uncertainty_features'] = uncertainty_features
+        if all_frequency_features is not None and (self.frequency_fusion_enabled or self.consensus_enabled):
             state['raw_frequency_mean'] = torch.stack([
                 all_frequency_features[images_targets == int(class_id)].mean(dim=0)
                 for class_id in class_index
@@ -985,7 +1011,8 @@ class BiMC(nn.Module):
                            frequency_band_weights=None,
                            frequency_class_alpha=None,
                            consensus_visual_proto=None,
-                           consensus_text_proto=None):
+                           consensus_text_proto=None,
+                           uncertainty_statistics=None):
         image_features = self.extract_img_feature(images)
         frequency_features = (
             self.extract_frequency_img_feature(images)
@@ -1003,7 +1030,36 @@ class BiMC(nn.Module):
             return self.apply_frequency_consensus(
                 images, image_features, reference, consensus_visual_proto, consensus_text_proto,
             )[0]
+        if self.uncertainty_enabled:
+            if uncertainty_statistics is None:
+                raise ValueError('Uncertainty forward requires class mean, variance and count.')
+            return self.apply_frequency_uncertainty(
+                images, image_features, reference, uncertainty_statistics,
+            )
         return self.apply_incremental_residual(image_features, reference)
+
+    @torch.no_grad()
+    def apply_frequency_uncertainty(self, images, image_features, reference_scores, statistics):
+        """Mix a calibrated predictive distribution with complete BiMC votes."""
+        from models.frequency_uncertainty import uncertainty_logits, mix_uncertainty_probabilities
+
+        if self.uncertainty_state is None:
+            raise RuntimeError('Initialize uncertainty with base-only calibration before inference.')
+        state = self.uncertainty_state
+        if state['alpha'] == 0:
+            return reference_scores
+        if self.cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL == 'original':
+            features = image_features.float().unsqueeze(1)
+        else:
+            features = self.extract_frequency_img_feature(images, original_features=image_features)
+        logits = uncertainty_logits(
+            features, statistics, state['prior'], prior_strength=state['prior_strength'],
+            var_floor=self.cfg.TRAINER.BiMC.UNCERTAINTY.VAR_FLOOR,
+            covariance=state['covariance'], mean_uncertainty=state['mean_uncertainty'],
+        )
+        return mix_uncertainty_probabilities(
+            reference_scores, logits, alpha=state['alpha'], temperature=state['temperature'],
+        )
 
     @torch.no_grad()
     def apply_frequency_consensus(self, images, image_features, reference_scores,

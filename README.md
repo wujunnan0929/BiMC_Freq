@@ -243,6 +243,41 @@ most important router ablations are:
 base-session pseudo-episode training.  Router training uses cached frozen CLIP
 features, so it does not repeat image encoding at every optimization step.
 
+## Frequency-wise predictive uncertainty
+
+`bimc_frequency_uncertainty.yaml` adds a gradient-free visual likelihood branch
+to the complete BiMC reference. It estimates a mean, unbiased diagonal variance,
+and sample count per class/view. Few-shot variances shrink toward pooled **within-class**
+base statistics. A plug-in `1 + 1/n` correction accounts for uncertainty in the
+estimated class mean; Gaussian scores retain the log-variance term.
+
+Base classes are split into disjoint prior-fitting and validation classes.
+Support/query-separated pseudo incremental sequences select shrinkage strength,
+temperature, and mixing alpha using an old/new balanced validation objective.
+The pooled prior is then refitted on all base training classes and frozen.
+Incremental sessions retain class statistics only; there are no gradient updates
+or frequency-specific text descriptions. Alpha zero preserves reference votes
+exactly and skips additional query image encodings.
+
+```bash
+python main.py --data_cfg configs/datasets/cub200.yaml --train_cfg configs/trainers/bimc_frequency_uncertainty.yaml --opts TRAINER.BiMC.FREQUENCY.FFT_DEVICE cpu OUTPUT_DIR outputs/uncertainty_single
+
+# Preview the paired matrix before running it; use --execute to launch.
+python tools/run_frequency_uncertainty_experiments.py --suite core --seeds 1 2 3 --dry-run
+```
+
+The core matrix contains BiMC, zero mixing, and both shared/shrunk variance
+models on original and frequency features. `--suite all` adds the existing
+frequency router. Each seed shares a support manifest. Runs save
+`uncertainty_calibration.json`, session metrics, predictions and class-statistic
+checkpoints. The original-feature control uses one feature view and needs no
+extra image encodings. The frequency version uses V2 natural views, which
+overlap; it is not an independent-subband probabilistic model.
+
+See [the uncertainty experiment protocol](docs/frequency_uncertainty_experiments.md)
+for base-only validation, controls, execution commands and limitations. This
+implementation does not establish a benchmark accuracy improvement.
+
 ## Incremental low-rank classifier residual
 
 The new experiment freezes CLIP, the completed base frequency router (when
