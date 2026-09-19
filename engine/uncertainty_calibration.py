@@ -1,4 +1,4 @@
-"""Calibrate diagonal predictive uncertainty using base training classes only.
+"""Calibrate diagonal uncertainty or shared GDA using base training classes only.
 
 The prior is fitted on classes disjoint from calibration episodes. Episode class
 statistics and the BiMC reference use support images only. Once hyperparameters
@@ -19,6 +19,7 @@ from models.frequency_uncertainty import (
 
 
 GROUPS = ('all', 'old', 'new', 'historical_incremental', 'current_new')
+GDA_COVARIANCES = ('full_shared', 'block_shared')
 
 
 def _number(value, name, *, lower=0., upper=None, strict=False):
@@ -41,13 +42,18 @@ def _grid(values, name, **limits):
 
 
 def _validate_settings(settings):
-    if settings.VIEW_CONTROL not in ('frequency', 'original'):
-        raise ValueError('UNCERTAINTY.VIEW_CONTROL must be frequency or original.')
-    if settings.COVARIANCE not in ('shrinkage', 'shared'):
-        raise ValueError('UNCERTAINTY.COVARIANCE must be shrinkage or shared.')
+    if settings.VIEW_CONTROL not in ('frequency', 'original', 'joint', 'repeat'):
+        raise ValueError('UNCERTAINTY.VIEW_CONTROL must be frequency, original, joint, or repeat.')
+    if settings.COVARIANCE not in ('shrinkage', 'shared', *GDA_COVARIANCES):
+        raise ValueError('Unsupported UNCERTAINTY.COVARIANCE.')
     for name in ('AUTO_CALIBRATE', 'MEAN_UNCERTAINTY'):
         if not isinstance(getattr(settings, name), bool):
             raise ValueError('UNCERTAINTY.' + name + ' must be boolean.')
+    if settings.COVARIANCE in GDA_COVARIANCES:
+        if settings.MEAN_UNCERTAINTY:
+            raise ValueError('Shared GDA requires MEAN_UNCERTAINTY=False.')
+        _number(settings.RIDGE, 'RIDGE', strict=True)
+        _grid(settings.RIDGE_GRID, 'RIDGE_GRID', strict=True)
     for name in ('VAL_EPISODES', 'OLD_WAY', 'NEW_WAY', 'STAGES', 'OLD_SHOT', 'SHOT', 'QUERY'):
         value = getattr(settings, name)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -87,7 +93,8 @@ def _validate_base_state(cfg, state):
         raise ValueError('Base training features must be finite.')
     if features.device != labels.device or features.device != auxiliary.device:
         raise ValueError('Base training tensors must share one device.')
-    expected_bands = 1 if cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL == 'original' else 3
+    expected_bands = {'original': 1, 'frequency': 3, 'joint': 4, 'repeat': 4}[
+        cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL]
     if auxiliary.shape[1] != expected_bands:
         raise ValueError('Auxiliary band count does not match UNCERTAINTY.VIEW_CONTROL.')
     class_ids = sorted(int(value) for value in torch.unique(labels))
@@ -109,13 +116,33 @@ def _validate_base_state(cfg, state):
     return features.detach().float(), labels, auxiliary.detach().float(), class_ids
 
 
-def _fit_prior(auxiliary, labels, class_ids, var_floor):
+def _fit_prior(auxiliary, labels, class_ids, var_floor, covariance='shared'):
+    if covariance in GDA_COVARIANCES:
+        from models.frequency_discriminant import pooled_full_covariance
+        return pooled_full_covariance(
+            auxiliary, labels, class_ids,
+            structure='block' if covariance == 'block_shared' else 'full',
+        )
     mask = torch.isin(labels, labels.new_tensor(class_ids))
     stats = class_statistics(features=auxiliary[mask], labels=labels[mask], class_ids=class_ids)
     prior = pooled_variance(stats=stats, var_floor=var_floor).detach()
     if prior.shape != auxiliary.shape[1:] or not torch.isfinite(prior).all():
         raise ValueError('The fitted uncertainty prior must be finite with shape [B,D].')
     return prior
+
+
+def _prior_report(prior, covariance):
+    """Keep large GDA matrices in checkpoints; JSON contains a reproducible audit."""
+    if covariance not in GDA_COVARIANCES:
+        return prior.cpu().tolist()
+    matrix = prior.detach().float().cpu().contiguous()
+    diagonal = matrix.diagonal()
+    return {'kind': 'pooled_within_class_covariance', 'structure': covariance,
+            'shape': list(matrix.shape), 'dtype': str(matrix.dtype),
+            'trace': float(diagonal.sum()), 'min_diagonal': float(diagonal.min()),
+            'max_diagonal': float(diagonal.max()),
+            'sha256': hashlib.sha256(matrix.numpy().tobytes()).hexdigest(),
+            'matrix_storage': 'checkpoint.pt: uncertainty_state.prior (final refit only)'}
 
 
 def _sequence_records(model, cfg, state, sequence):
@@ -169,6 +196,17 @@ def _summarize(counts):
 
 
 def _candidate_grid(settings, priors, alphas, temperatures):
+    if settings.COVARIANCE in GDA_COVARIANCES:
+        # Prior strength is retained only for compatibility with old audit readers.
+        # GDA uses a shared metric; it never shrinks per-class sample variances.
+        zero = {'prior_strength': float(settings.PRIOR_STRENGTH), 'alpha': 0.,
+                'temperature': float(settings.TEMPERATURE), 'ridge': float(settings.RIDGE)}
+        ridges = _grid(settings.RIDGE_GRID, 'RIDGE_GRID', strict=True)
+        return [zero] + [
+            {'prior_strength': float(settings.PRIOR_STRENGTH), 'alpha': alpha,
+             'temperature': temperature, 'ridge': ridge}
+            for alpha in alphas if alpha > 0 for ridge in ridges for temperature in temperatures
+        ]
     # Shared covariance ignores support sample variances and prior strength.
     if settings.COVARIANCE == 'shared':
         priors = [float(settings.PRIOR_STRENGTH)]
@@ -183,6 +221,14 @@ def _candidate_grid(settings, priors, alphas, temperatures):
 
 def _evaluate(model, cfg, state, sequences, prior, candidates):
     settings = cfg.TRAINER.BiMC.UNCERTAINTY
+    gda = settings.COVARIANCE in GDA_COVARIANCES
+    precisions = {}
+    if gda:
+        from models.frequency_discriminant import precision_from_covariance, discriminant_logits
+        precisions = {
+            ridge: precision_from_covariance(prior, ridge=ridge, var_floor=settings.VAR_FLOOR)
+            for ridge in {candidate['ridge'] for candidate in candidates if candidate['alpha'] > 0}
+        }
     stages = [[{'stage': stage, 'candidate_classes': settings.OLD_WAY + stage * settings.NEW_WAY,
                 'groups': {name: _empty_counts() for name in GROUPS}}
                for stage in range(settings.STAGES + 1)] for _ in candidates]
@@ -199,16 +245,22 @@ def _evaluate(model, cfg, state, sequences, prior, candidates):
                      'historical_incremental': ~old & ~current, 'current_new': current}
             logits_by_prior = {}
             for index, candidate in enumerate(candidates):
-                strength = candidate['prior_strength']
+                strength = candidate['ridge'] if gda else candidate['prior_strength']
                 if candidate['alpha'] == 0:
                     output = reference
                 else:
                     if strength not in logits_by_prior:
-                        logits_by_prior[strength] = uncertainty_logits(
-                            features=record['features'], stats=record['stats'], prior=prior,
-                            prior_strength=strength, var_floor=settings.VAR_FLOOR,
-                            covariance=settings.COVARIANCE, mean_uncertainty=settings.MEAN_UNCERTAINTY,
-                        )
+                        if gda:
+                            logits_by_prior[strength] = discriminant_logits(
+                                record['features'], record['stats'], precisions[strength],
+                                validate_precision=False,
+                            )
+                        else:
+                            logits_by_prior[strength] = uncertainty_logits(
+                                features=record['features'], stats=record['stats'], prior=prior,
+                                prior_strength=strength, var_floor=settings.VAR_FLOOR,
+                                covariance=settings.COVARIANCE, mean_uncertainty=settings.MEAN_UNCERTAINTY,
+                            )
                     output = mix_uncertainty_probabilities(
                         reference=reference, logits=logits_by_prior[strength],
                         alpha=candidate['alpha'], temperature=candidate['temperature'],
@@ -240,6 +292,7 @@ def initialize_uncertainty(model, cfg, base_state):
         raise RuntimeError('Uncertainty statistics must be initialized once, at base only.')
     settings = cfg.TRAINER.BiMC.UNCERTAINTY
     priors, alphas, temperatures = _validate_settings(settings)
+    gda = settings.COVARIANCE in GDA_COVARIANCES
     if (getattr(model, 'frequency_fusion_enabled', False)
             or cfg.TRAINER.BiMC.RESIDUAL.ENABLED or cfg.TRAINER.BiMC.CONSENSUS.ENABLED):
         raise ValueError('Uncertainty calibration requires a plain BiMC reference.')
@@ -256,6 +309,12 @@ def initialize_uncertainty(model, cfg, base_state):
               'base_class_ids': class_ids, 'base_sample_count': len(labels),
               'fit_class_ids': [], 'validation_class_ids': [], 'validation_sequences': [],
               'validation_query_occurrences': 0, 'candidate_results': []}
+    if gda:
+        report.update(method='shared_covariance_gda', class_prior='uniform',
+                      class_mean_normalized=False, prior_strength_used=False,
+                      ridge_definition='covariance + ridge * max(mean(diagonal), var_floor) * I',
+                      score_definition='(x @ precision @ mean - 0.5 * mean @ precision @ mean) / feature_dimension',
+                      tie_break='Smaller alpha, then larger ridge, then smaller temperature.')
     if settings.AUTO_CALIBRATE:
         generator = torch.Generator().manual_seed(seed)
         order = torch.randperm(len(class_ids), generator=generator).tolist()
@@ -272,7 +331,7 @@ def initialize_uncertainty(model, cfg, base_state):
         for class_id in validation_ids:
             if int((labels == class_id).sum()) < minimum:
                 raise ValueError(f'Base class {class_id} needs {minimum} distinct support/query images.')
-        fit_prior = _fit_prior(auxiliary, labels, fit_ids, settings.VAR_FLOOR)
+        fit_prior = _fit_prior(auxiliary, labels, fit_ids, settings.VAR_FLOOR, settings.COVARIANCE)
         sequences = [sample_sequence(labels, validation_ids, settings, generator)
                      for _ in range(settings.VAL_EPISODES)]
         candidates = _candidate_grid(settings, priors, alphas, temperatures)
@@ -280,29 +339,34 @@ def initialize_uncertainty(model, cfg, base_state):
         best = max(candidate['balanced_objective'] for candidate in results)
         winner = min((candidate for candidate in results
                       if candidate['balanced_objective'] >= best - 1e-12),
-                     key=lambda candidate: (candidate['alpha'], candidate['prior_strength'],
+                     key=lambda candidate: (candidate['alpha'],
+                                            -candidate['ridge'] if gda else candidate['prior_strength'],
                                             candidate['temperature']))
-        selected = {key: winner[key] for key in ('prior_strength', 'alpha', 'temperature')}
+        selected_keys = ('prior_strength', 'alpha', 'temperature', 'ridge') if gda else (
+            'prior_strength', 'alpha', 'temperature')
+        selected = {key: winner[key] for key in selected_keys}
         report.update(selection_status='base_class_disjoint_validation',
                       fit_class_ids=fit_ids, validation_class_ids=validation_ids,
                       fit_sample_count=int(torch.isin(labels, labels.new_tensor(fit_ids)).sum()),
-                      selection_prior=fit_prior.cpu().tolist(), validation_sequences=sequences,
+                      selection_prior=_prior_report(fit_prior, settings.COVARIANCE), validation_sequences=sequences,
                       validation_query_occurrences=winner['count'], candidate_results=results,
                       selected_balanced_objective=winner['balanced_objective'],
                       reference_accuracy=results[0]['accuracy'])
     else:
         selected = {'prior_strength': float(settings.PRIOR_STRENGTH),
                     'alpha': float(settings.ALPHA), 'temperature': float(settings.TEMPERATURE)}
+        if gda:
+            selected['ridge'] = float(settings.RIDGE)
         report.update(selection_status='manual_unvalidated', fit_class_ids=class_ids,
                       fit_sample_count=len(labels), selected_balanced_objective=None,
                       reference_accuracy=None)
-    prior = _fit_prior(auxiliary, labels, class_ids, settings.VAR_FLOOR)
+    prior = _fit_prior(auxiliary, labels, class_ids, settings.VAR_FLOOR, settings.COVARIANCE)
     report.update(selected=selected, selected_alpha=selected['alpha'],
                   selected_prior_strength=selected['prior_strength'],
-                  selected_temperature=selected['temperature'], prior=prior.cpu().tolist(),
+                  selected_temperature=selected['temperature'], prior=_prior_report(prior, settings.COVARIANCE),
                   refit={'class_ids': class_ids, 'sample_count': len(labels),
                          'hyperparameters_frozen': True,
-                         'description': 'Pooled within-class diagonal prior fitted on all base training '
+                         'description': 'Pooled within-class prior fitted on all base training '
                                         'images after freezing hyperparameters. Former validation support/query '
                                         'images rejoin this fit; no benchmark test or future-class images are used.'},
                   limitation='Validation queries recur across stages; counts are occurrences, not '
@@ -313,6 +377,13 @@ def initialize_uncertainty(model, cfg, base_state):
     report['protocol_sha256'] = hashlib.sha256(json.dumps(audit, sort_keys=True).encode()).hexdigest()
     # Check serialization before committing state, so failures leave initialization retryable.
     json.dumps(report, allow_nan=False)
-    model.uncertainty_state = {'prior': prior, **selected, 'covariance': settings.COVARIANCE,
-                               'mean_uncertainty': settings.MEAN_UNCERTAINTY}
+    fitted_state = {'prior': prior, **selected, 'covariance': settings.COVARIANCE,
+                    'mean_uncertainty': settings.MEAN_UNCERTAINTY}
+    if gda:
+        from models.frequency_discriminant import precision_from_covariance
+        # Fit once after base-only selection. Incremental sessions never refit this metric.
+        fitted_state['precision'] = precision_from_covariance(
+            prior, ridge=selected['ridge'], var_floor=settings.VAR_FLOOR,
+        )
+    model.uncertainty_state = fitted_state
     return report

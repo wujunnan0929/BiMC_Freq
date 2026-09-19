@@ -278,6 +278,27 @@ See [the uncertainty experiment protocol](docs/frequency_uncertainty_experiments
 for base-only validation, controls, execution commands and limitations. This
 implementation does not establish a benchmark accuracy improvement.
 
+## Training-free joint frequency GDA
+
+`bimc_frequency_discriminant.yaml` jointly models the original image and three
+fixed frequency views with a pooled **within-class full covariance**. A ridge
+stabilizes the shared precision. Class means retain their norm, class priors are
+uniform, and neither class-specific predictive covariance nor gradient updates
+are used. The base-only selection protocol calibrates ridge, temperature, and
+mixing strength, then freezes the metric throughout incremental sessions.
+
+```bash
+python tools/run_frequency_discriminant_experiments.py --suite core --seeds 1 --dry-run
+```
+
+The six core controls include BiMC, the previous original/frequency statistical
+methods, original-only GDA, independent full-covariance views, and joint GDA.
+`--suite all` adds diagonal and repeated-original controls; no variant trains a
+router. Use a new output directory because source/configuration fingerprints
+have changed. This is an experiment, not an established accuracy improvement.
+See [the joint GDA protocol](docs/frequency_discriminant_experiments.md) for
+server commands, shared support manifests, formulas and interpretation limits.
+
 ## Incremental low-rank classifier residual
 
 The new experiment freezes CLIP, the completed base frequency router (when

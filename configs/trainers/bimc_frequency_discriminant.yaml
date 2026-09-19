@@ -1,0 +1,73 @@
+SEED: 1
+
+DEVICE:
+  DEVICE_NAME: "cuda"
+  GPU_ID: "0;"
+
+DATALOADER:
+  TRAIN:
+    BATCH_SIZE_BASE: 64
+    BATCH_SIZE_INC: 64
+  TEST:
+    BATCH_SIZE: 100
+  NUM_WORKERS: 4
+
+MODEL:
+  BACKBONE:
+    NAME: "ViT-B/16"
+
+TRAINER:
+  BiMC:
+    PREC: "fp16"
+    VISION_CALIBRATION: True
+    LAMBDA_I: 0.1
+    TAU: 16
+    TEXT_CALIBRATION: True
+    LAMBDA_T: 0.5
+    GAMMA_BASE: 1.0
+    GAMMA_INC: 5.0
+    USING_ENSEMBLE: True
+    RESIDUAL:
+      ENABLED: False
+    CONSENSUS:
+      ENABLED: False
+    FREQUENCY:
+      ENABLED: False
+      ROUTER:
+        ENABLED: False
+      VIEW_MODE: "natural"
+      LOW_CUTOFF: 0.18
+      HIGH_CUTOFF: 0.45
+      HIGH_ENHANCE: 0.5
+      FFT_BATCH_SIZE: 8
+      FFT_DEVICE: "auto"
+      USE_EXPLICIT_DESCRIPTIONS: False
+
+    # Closed-form shared Gaussian discriminant, with uniform class priors.
+    # No optimizer, gradient steps, or per-class predictive covariance.
+    UNCERTAINTY:
+      ENABLED: True
+      VIEW_CONTROL: "joint"
+      COVARIANCE: "full_shared"
+      MEAN_UNCERTAINTY: False
+      RIDGE: 0.1
+      RIDGE_GRID: [0.01, 0.1, 1.0]
+      VAR_FLOOR: 0.000001
+      # The following two keys are used only by the old diagonal controls.
+      PRIOR_STRENGTH: 20.0
+      PRIOR_GRID: [5.0, 20.0, 100.0]
+      AUTO_CALIBRATE: True
+      ALPHA: 0.1
+      ALPHA_GRID: [0.0, 0.05, 0.1, 0.2]
+      TEMPERATURE: 1.0
+      TEMPERATURE_GRID: [0.1, 0.3, 1.0]
+      FIT_FRACTION: 0.5
+      VAL_EPISODES: 20
+      OLD_WAY: 10
+      NEW_WAY: 5
+      STAGES: 2
+      OLD_SHOT: 20
+      SHOT: 5
+      QUERY: 5
+      CALIBRATION_SEED: -1
+      BASE_ONLY: False

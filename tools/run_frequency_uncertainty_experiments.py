@@ -51,7 +51,7 @@ def variants_for_suite(suite):
     return [(name, {**options, **overrides}) for name, overrides in definitions]
 
 
-def build_plan(args):
+def build_plan(args, matrix=None, launcher_path=None):
     if len(args.opts) % 2 or len(set(args.opts[::2])) != len(args.opts[::2]):
         raise ValueError('--opts requires distinct KEY VALUE pairs and must be last.')
     collision = set(args.opts[::2]) & MANAGED
@@ -75,7 +75,8 @@ def build_plan(args):
                            if key.endswith('PATH') and value and Path(value).is_file())
     source_hash = common.sha256_json({
         'implementation': common.source_digest(REPO_ROOT),
-        'launcher': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        'launcher': hashlib.sha256(Path(__file__ if launcher_path is None else launcher_path).read_bytes()).hexdigest(),
+        'shared_launcher': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         'auxiliary_files': {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
                             for path in auxiliary_files},
     })
@@ -84,7 +85,7 @@ def build_plan(args):
         'dataset_config': configs[str(data_cfg)],
         'dataset_options': {key: value for key, value in options.items() if key.startswith('DATASET.')},
     })[:12]
-    matrix = variants_for_suite(args.suite)
+    matrix = variants_for_suite(args.suite) if matrix is None else matrix
     selected = set(args.variants or [name for name, _ in matrix])
     unknown = selected - {name for name, _ in matrix}
     if unknown:
@@ -215,7 +216,8 @@ def save_summary(path, args, rows, planned_runs):
     aggregates, paired = common.aggregate_results(enriched)
     successful = [row for row in enriched if row['status'] in ('completed', 'skipped')]
     comparisons = {}
-    for reference_name in ('original_shared', 'original_shrinkage', 'frequency_shared', 'router'):
+    for reference_name in ('original_shared', 'original_shrinkage', 'frequency_shared', 'router',
+                           'original_gda', 'frequency_gda_block', 'original_diagonal', 'original_repeat_gda'):
         reference = {row['seed']: row for row in successful if row['variant'] == reference_name}
         if not reference:
             continue

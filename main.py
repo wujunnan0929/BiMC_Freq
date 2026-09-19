@@ -135,12 +135,16 @@ def extend_cfg(cfg):
     cfg.TRAINER.BiMC.UNCERTAINTY = CN()
     uncertainty = cfg.TRAINER.BiMC.UNCERTAINTY
     uncertainty.ENABLED = False
-    uncertainty.VIEW_CONTROL = 'frequency'  # frequency or single original feature
-    uncertainty.COVARIANCE = 'shrinkage'  # shrinkage or pooled shared variance
+    uncertainty.VIEW_CONTROL = 'frequency'  # original, frequency, joint, or repeat (four originals)
+    uncertainty.COVARIANCE = 'shrinkage'  # diagonal modes, full_shared, or block_shared
     uncertainty.PRIOR_STRENGTH = 20.0
     uncertainty.PRIOR_GRID = [5.0, 20.0, 100.0]
     uncertainty.VAR_FLOOR = 1e-6
     uncertainty.MEAN_UNCERTAINTY = True
+    # Shared GDA uses a ridge relative to the pooled covariance mean diagonal.
+    # It requires MEAN_UNCERTAINTY=False; no class-dependent variance or prior.
+    uncertainty.RIDGE = 0.1
+    uncertainty.RIDGE_GRID = [0.01, 0.1, 1.0]
     uncertainty.AUTO_CALIBRATE = True
     uncertainty.ALPHA = 0.1
     uncertainty.ALPHA_GRID = [0.0, 0.05, 0.1, 0.2]

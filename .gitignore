@@ -9,5 +9,6 @@ docs/*
 !docs/frequency_consensus_followup.md
 !docs/frequency_consensus_reranking_design.md
 !docs/frequency_uncertainty_experiments.md
+!docs/frequency_discriminant_experiments.md
 shared_dictionary_group_report*
 tools/*.local.ps1

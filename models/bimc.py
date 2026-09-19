@@ -69,17 +69,21 @@ class BiMC(nn.Module):
         self.frequency_fusion_enabled = cfg.TRAINER.BiMC.FREQUENCY.ENABLED
         self.frequency_enabled = (self.frequency_fusion_enabled or self.consensus_enabled
                                   or (self.uncertainty_enabled
-                                      and cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL == 'frequency'))
+                                      and cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL in ('frequency', 'joint')))
         self.image_encoding_counts = {'original': 0, 'auxiliary': 0}
         if self.uncertainty_enabled:
             if (self.frequency_fusion_enabled or self.consensus_enabled
                     or cfg.TRAINER.BiMC.FREQUENCY.ROUTER.ENABLED
                     or cfg.TRAINER.BiMC.RESIDUAL.ENABLED):
                 raise ValueError('UNCERTAINTY requires legacy fusion, router, consensus and residual disabled.')
-            if cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL not in ('frequency', 'original'):
-                raise ValueError('UNCERTAINTY.VIEW_CONTROL must be frequency or original.')
-            if cfg.TRAINER.BiMC.UNCERTAINTY.COVARIANCE not in ('shrinkage', 'shared'):
-                raise ValueError('UNCERTAINTY.COVARIANCE must be shrinkage or shared.')
+            if cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL not in ('frequency', 'original', 'joint', 'repeat'):
+                raise ValueError('UNCERTAINTY.VIEW_CONTROL must be frequency, original, joint, or repeat.')
+            if cfg.TRAINER.BiMC.UNCERTAINTY.COVARIANCE not in (
+                    'shrinkage', 'shared', 'full_shared', 'block_shared'):
+                raise ValueError('Unsupported UNCERTAINTY.COVARIANCE.')
+            if (cfg.TRAINER.BiMC.UNCERTAINTY.COVARIANCE in ('full_shared', 'block_shared')
+                    and cfg.TRAINER.BiMC.UNCERTAINTY.MEAN_UNCERTAINTY):
+                raise ValueError('Shared GDA requires MEAN_UNCERTAINTY=False.')
         if self.consensus_enabled:
             if self.frequency_fusion_enabled or cfg.TRAINER.BiMC.FREQUENCY.ROUTER.ENABLED:
                 raise ValueError('CONSENSUS requires legacy FREQUENCY fusion/router disabled.')
@@ -977,10 +981,16 @@ class BiMC(nn.Module):
         state['raw_image_mean'] = raw_image_mean
         if self.uncertainty_enabled:
             from models.frequency_uncertainty import class_statistics
-            uncertainty_features = (
-                all_frequency_features if self.cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL == 'frequency'
-                else images_features.float().unsqueeze(1)
-            )
+            control = self.cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL
+            uncertainty_features = images_features.float().unsqueeze(1)
+            if control == 'frequency':
+                uncertainty_features = all_frequency_features
+            elif control == 'joint':
+                uncertainty_features = torch.cat(
+                    (uncertainty_features, all_frequency_features.float()), dim=1,
+                )
+            elif control == 'repeat':
+                uncertainty_features = uncertainty_features.expand(-1, 4, -1)
             state['uncertainty_statistics'] = class_statistics(
                 uncertainty_features, images_targets, class_index,
             )
@@ -1048,15 +1058,31 @@ class BiMC(nn.Module):
         state = self.uncertainty_state
         if state['alpha'] == 0:
             return reference_scores
-        if self.cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL == 'original':
+        control = self.cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL
+        if control in ('original', 'repeat'):
             features = image_features.float().unsqueeze(1)
+            if control == 'repeat':
+                features = features.expand(-1, 4, -1)
         else:
             features = self.extract_frequency_img_feature(images, original_features=image_features)
-        logits = uncertainty_logits(
-            features, statistics, state['prior'], prior_strength=state['prior_strength'],
-            var_floor=self.cfg.TRAINER.BiMC.UNCERTAINTY.VAR_FLOOR,
-            covariance=state['covariance'], mean_uncertainty=state['mean_uncertainty'],
-        )
+            if control == 'joint':
+                features = torch.cat((image_features.float().unsqueeze(1), features.float()), dim=1)
+        if state['covariance'] in ('full_shared', 'block_shared'):
+            from models.frequency_discriminant import prepare_discriminant, prepared_discriminant_logits
+            mean, precision = statistics['mean'], state['precision']
+            cache = getattr(self, '_discriminant_cache_key', None)
+            if (cache is None or cache[0] is not mean or cache[1] != mean._version
+                    or cache[2] is not precision or cache[3] != precision._version
+                    or 'classifier' not in state):
+                state['classifier'] = prepare_discriminant(statistics, precision, validate_precision=False)
+                self._discriminant_cache_key = (mean, mean._version, precision, precision._version)
+            logits = prepared_discriminant_logits(features, state['classifier'])
+        else:
+            logits = uncertainty_logits(
+                features, statistics, state['prior'], prior_strength=state['prior_strength'],
+                var_floor=self.cfg.TRAINER.BiMC.UNCERTAINTY.VAR_FLOOR,
+                covariance=state['covariance'], mean_uncertainty=state['mean_uncertainty'],
+            )
         return mix_uncertainty_probabilities(
             reference_scores, logits, alpha=state['alpha'], temperature=state['temperature'],
         )

@@ -231,7 +231,8 @@ class Runner:
                     )
                 print('Frequency uncertainty calibration:', {
                     key: self.model.uncertainty_state[key]
-                    for key in ('alpha', 'temperature', 'prior_strength', 'covariance')
+                    for key in ('alpha', 'temperature', 'prior_strength', 'covariance', 'ridge')
+                    if key in self.model.uncertainty_state
                 })
             states.append(current)
             merged = self.merge_dicts(states)
