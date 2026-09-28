@@ -6,7 +6,7 @@ import json
 import math
 
 from models.frequency import (
-    RadialFrequencyDecomposer,
+    build_frequency_decomposer,
     calibrate_frequency_prototypes,
     compute_frequency_band_logits,
     compute_frequency_class_alpha,
@@ -117,15 +117,8 @@ class BiMC(nn.Module):
                     "EXPLICIT_DESCRIPTION_PATH is required when explicit "
                     "frequency descriptions are enabled."
                 )
-            self.frequency_decomposer = RadialFrequencyDecomposer(
-                low_cutoff=frequency_cfg.LOW_CUTOFF,
-                high_cutoff=frequency_cfg.HIGH_CUTOFF,
-                center_residual_bands=frequency_cfg.CENTER_RESIDUAL_BANDS,
-                fft_batch_size=frequency_cfg.FFT_BATCH_SIZE,
-                fft_device=frequency_cfg.FFT_DEVICE,
-                view_mode=frequency_cfg.VIEW_MODE,
-                high_enhance=frequency_cfg.HIGH_ENHANCE,
-            ).to(self.device)
+            self.frequency_decomposer = build_frequency_decomposer(frequency_cfg).to(self.device)
+            print("Frequency decomposition backend:", frequency_cfg.BACKEND)
             router_cfg = frequency_cfg.ROUTER
             if router_cfg.ENABLED:
                 if router_cfg.TRAIN_STEPS <= 0:

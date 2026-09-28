@@ -166,6 +166,17 @@ def extend_cfg(cfg):
     # mode defaults to off so existing BiMC configs reproduce the original method.
     cfg.TRAINER.BiMC.FREQUENCY = CN()
     cfg.TRAINER.BiMC.FREQUENCY.ENABLED = False
+    cfg.TRAINER.BiMC.FREQUENCY.BACKEND = "fft"
+    cfg.TRAINER.BiMC.FREQUENCY.SAFD = CN()
+    safd = cfg.TRAINER.BiMC.FREQUENCY.SAFD
+    safd.LOW_TERMS = 8
+    safd.MIDDLE_TERMS = 24
+    safd.RADII = [0.0, 0.3, 0.6, 0.8]
+    safd.ANGLES = 16
+    safd.MAX_SIGNALS = 96
+    safd.BATCH_SIZE = 2
+    safd.ORIGINAL_BLEND = [0.25, 0.1]
+    safd.MAX_DETAIL_RMS = 0.04
     cfg.TRAINER.BiMC.FREQUENCY.LOW_CUTOFF = 0.18
     cfg.TRAINER.BiMC.FREQUENCY.HIGH_CUTOFF = 0.45
     cfg.TRAINER.BiMC.FREQUENCY.CENTER_RESIDUAL_BANDS = True

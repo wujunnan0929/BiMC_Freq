@@ -85,6 +85,24 @@ The direct implementation evaluates four frozen CLIP image encodings per
 sample (original plus three bands), trading runtime for a clean experimental
 isolation of the frequency contribution.
 
+### SAFD backend
+
+The `codex/safd` branch adds stochastic adaptive Fourier decomposition using
+shared Szego/TM atoms over each image's scanlines, without FFT. The standalone
+`configs/trainers/bimc_safd.yaml` uses original-image-preserving views and
+base-only calibration of a joint GDA classifier. Existing FFT configs remain
+available for matched comparisons. Accuracy gains require benchmark validation.
+
+```bash
+python main.py --data_cfg configs/datasets/cub200.yaml --train_cfg configs/trainers/bimc_safd.yaml
+python tools/run_safd_experiments.py --seeds 1 2 3 --dry-run
+```
+
+See [SAFD implementation and experiments](docs/safd_experiments.md) for the
+algorithm, configuration, paired FFT comparisons, and existing-router usage.
+For a direct replacement of the existing frequency router, use
+`configs/trainers/bimc_safd_router.yaml`.
+
 ### Frequency V2
 
 V2 replaces isolated residual inputs with three CLIP-compatible views:

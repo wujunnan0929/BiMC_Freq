@@ -13,6 +13,27 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def build_frequency_decomposer(cfg):
+    """Select the image decomposition without changing downstream classifiers."""
+    backend = cfg.BACKEND.lower()
+    common = dict(view_mode=cfg.VIEW_MODE, high_enhance=cfg.HIGH_ENHANCE,
+                  center_residual_bands=cfg.CENTER_RESIDUAL_BANDS)
+    if backend == "fft":
+        return RadialFrequencyDecomposer(
+            cfg.LOW_CUTOFF, cfg.HIGH_CUTOFF, fft_batch_size=cfg.FFT_BATCH_SIZE,
+            fft_device=cfg.FFT_DEVICE, **common)
+    if backend == "safd":
+        from models.safd import SAFDFrequencyDecomposer
+        settings = cfg.SAFD
+        return SAFDFrequencyDecomposer(
+            low_terms=settings.LOW_TERMS, middle_terms=settings.MIDDLE_TERMS,
+            radii=settings.RADII, angles=settings.ANGLES,
+            max_signals=settings.MAX_SIGNALS, batch_size=settings.BATCH_SIZE,
+            original_blend=settings.ORIGINAL_BLEND,
+            max_detail_rms=settings.MAX_DETAIL_RMS, **common)
+    raise ValueError("FREQUENCY.BACKEND must be fft or safd.")
+
+
 class RadialFrequencyDecomposer(nn.Module):
     """Build low-, middle-, and high-frequency views of normalized images.
 

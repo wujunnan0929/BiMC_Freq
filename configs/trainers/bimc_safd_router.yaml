@@ -1,0 +1,40 @@
+# Existing frequency router with SAFD views; no classifier redesign.
+SEED: 1
+DEVICE:
+  DEVICE_NAME: "cuda"
+  GPU_ID: "0;"
+DATALOADER:
+  TRAIN:
+    BATCH_SIZE_BASE: 32
+    BATCH_SIZE_INC: 32
+  TEST:
+    BATCH_SIZE: 32
+  NUM_WORKERS: 4
+MODEL:
+  BACKBONE:
+    NAME: "ViT-B/16"
+TRAINER:
+  BiMC:
+    PREC: "fp32"
+    VISION_CALIBRATION: True
+    LAMBDA_I: 0.1
+    TAU: 16
+    TEXT_CALIBRATION: True
+    LAMBDA_T: 0.5
+    GAMMA_BASE: 1.0
+    GAMMA_INC: 5.0
+    USING_ENSEMBLE: True
+    FREQUENCY:
+      ENABLED: True
+      BACKEND: "safd"
+      VIEW_MODE: "natural"
+      HIGH_ENHANCE: 0.25
+      NOVEL_VISION_CALIBRATION: False
+      SEMANTIC_GATE_MODE: "attenuate"
+      FREQ_ALPHA: 0.20
+      RELIABILITY_ALPHA: True
+      ROUTER:
+        ENABLED: True
+        TRAIN_STEPS: 400
+        MAX_ALPHA: 0.75
+        USE_CLASS_ALPHA: False
