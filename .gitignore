@@ -9,5 +9,6 @@ paper/*
 .chart-data*
 docs/*
 !docs/safd_experiments.md
+!docs/safd_dual_design.md
 shared_dictionary_group_report*
 tools/*.local.ps1

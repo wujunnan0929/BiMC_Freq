@@ -161,6 +161,28 @@ def extend_cfg(cfg):
     uncertainty.CALIBRATION_SEED = -1  # run seed + 10101
     uncertainty.BASE_ONLY = False
 
+    # Gradient-free dual-modal scale evidence on top of an original-view GDA.
+    cfg.TRAINER.BiMC.DUAL_FREQUENCY = CN()
+    dual = cfg.TRAINER.BiMC.DUAL_FREQUENCY
+    dual.ENABLED = False
+    dual.SEMANTIC_SOURCE = 'explicit'  # explicit, ordinary, structured
+    dual.ORDINARY_CANDIDATES = 5
+    dual.SEMANTIC_PERMUTATION = [0, 1, 2]
+    dual.RESIDUALIZE = True
+    dual.ALIGNMENT = True
+    dual.MODE = 'consensus'  # visual, semantic, average, consensus
+    dual.BAND_WEIGHTS = [1.0, 1.0, 1.0]
+    dual.SHOT_TAU = 5.0
+    dual.AUTO_CALIBRATE = True
+    dual.FIT_EPISODES = 20
+    dual.SCALE_EPS = 1e-4
+    dual.LAMBDA = 0.0
+    dual.LAMBDA_GRID = [0.0, 0.003, 0.01, 0.03, 0.1, 0.3, 0.6]
+    dual.MANUAL_SCALES = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+    dual.MAX_GROUP_DROP_PP = 0.0
+    dual.BASE_ONLY = False
+    dual.SAVE_PREDICTIONS = True
+
     # Frequency-aware prototype calibration.  The legacy path is training-free;
     # an optional base-session residual router can be enabled below.  Frequency
     # mode defaults to off so existing BiMC configs reproduce the original method.

@@ -66,11 +66,17 @@ class BiMC(nn.Module):
         self.consensus_state = None
         self.uncertainty_enabled = cfg.TRAINER.BiMC.UNCERTAINTY.ENABLED
         self.uncertainty_state = None
+        self.dual_frequency_enabled = cfg.TRAINER.BiMC.DUAL_FREQUENCY.ENABLED
+        self.dual_frequency_state = None
         self.frequency_fusion_enabled = cfg.TRAINER.BiMC.FREQUENCY.ENABLED
         self.frequency_enabled = (self.frequency_fusion_enabled or self.consensus_enabled
+                                  or self.dual_frequency_enabled
                                   or (self.uncertainty_enabled
                                       and cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL in ('frequency', 'joint')))
         self.image_encoding_counts = {'original': 0, 'auxiliary': 0}
+        if self.dual_frequency_enabled:
+            from engine.dual_frequency_calibration import validate_dual_settings
+            validate_dual_settings(cfg)
         if self.uncertainty_enabled:
             if (self.frequency_fusion_enabled or self.consensus_enabled
                     or cfg.TRAINER.BiMC.FREQUENCY.ROUTER.ENABLED
@@ -110,7 +116,8 @@ class BiMC(nn.Module):
                 raise ValueError("DESCRIPTION_TEMPERATURE must be positive.")
             if (
                 frequency_cfg.USE_EXPLICIT_DESCRIPTIONS
-                and (self.frequency_fusion_enabled or self.consensus_enabled)
+                and (self.frequency_fusion_enabled or self.consensus_enabled
+                     or self.dual_frequency_enabled)
                 and not frequency_cfg.EXPLICIT_DESCRIPTION_PATH
             ):
                 raise ValueError(
@@ -944,6 +951,33 @@ class BiMC(nn.Module):
             frequency_state = {'frequency_consensus_text_proto': consensus_text}
 
 
+        if self.dual_frequency_enabled:
+            from models.dual_frequency import support_statistics
+            dual_cfg = self.cfg.TRAINER.BiMC.DUAL_FREQUENCY
+            if dual_cfg.SEMANTIC_SOURCE == 'explicit':
+                dual_candidates = self.inference_explicit_frequency_description_candidates(
+                    class_names, self.cfg.TRAINER.BiMC.FREQUENCY.EXPLICIT_DESCRIPTION_PATH,
+                )
+            elif dual_cfg.SEMANTIC_SOURCE == 'structured':
+                dual_candidates = self.inference_frequency_text_feature(class_names).unsqueeze(2)
+            else:
+                # Ordinary BiMC descriptions, repeated into the three slots.
+                per_class = [description_features[description_targets == int(class_id)]
+                             for class_id in class_index]
+                # CUB ordinary descriptions have variable counts (18--50).
+                # A fixed, text-order-only subset matches the candidate budget;
+                # no image/label-based selection is used for this control.
+                per_class = [values[torch.linspace(0, len(values) - 1,
+                                                   dual_cfg.ORDINARY_CANDIDATES,
+                                                   device=values.device).round().long()]
+                             for values in per_class]
+                dual_candidates = torch.stack(per_class)[:, None].expand(-1, 3, -1, -1)
+            frequency_state['dual_description_candidates'] = dual_candidates.float()
+            frequency_state['dual_statistics'] = support_statistics(
+                images_features, all_frequency_features, images_targets, class_index,
+                residualize=dual_cfg.RESIDUALIZE,
+            )
+
         cov_images = torch.cov(images_features.T)
 
         if cls_begin_index == 0:
@@ -990,7 +1024,8 @@ class BiMC(nn.Module):
             # Base calibration consumes this cache; only sufficient statistics
             # survive a session boundary, including for historical novel classes.
             state['uncertainty_features'] = uncertainty_features
-        if all_frequency_features is not None and (self.frequency_fusion_enabled or self.consensus_enabled):
+        if all_frequency_features is not None and (self.frequency_fusion_enabled or self.consensus_enabled
+                                                    or self.dual_frequency_enabled):
             state['raw_frequency_mean'] = torch.stack([
                 all_frequency_features[images_targets == int(class_id)].mean(dim=0)
                 for class_id in class_index
@@ -998,7 +1033,8 @@ class BiMC(nn.Module):
             # Temporary cache for fitting the current session only; never merge
             # or retain sample-level frequency features across sessions.
             state['frequency_features'] = all_frequency_features
-            if self.cfg.TRAINER.BiMC.FREQUENCY.USE_EXPLICIT_DESCRIPTIONS:
+            if (self.cfg.TRAINER.BiMC.FREQUENCY.USE_EXPLICIT_DESCRIPTIONS
+                    and not self.dual_frequency_enabled):
                 state['frequency_description_candidates'] = frequency_description_candidates
         return state
 
@@ -1015,7 +1051,8 @@ class BiMC(nn.Module):
                            frequency_class_alpha=None,
                            consensus_visual_proto=None,
                            consensus_text_proto=None,
-                           uncertainty_statistics=None):
+                           uncertainty_statistics=None,
+                           dual_alignment=None):
         image_features = self.extract_img_feature(images)
         frequency_features = (
             self.extract_frequency_img_feature(images)
@@ -1036,9 +1073,14 @@ class BiMC(nn.Module):
         if self.uncertainty_enabled:
             if uncertainty_statistics is None:
                 raise ValueError('Uncertainty forward requires class mean, variance and count.')
-            return self.apply_frequency_uncertainty(
+            anchor = self.apply_frequency_uncertainty(
                 images, image_features, reference, uncertainty_statistics,
             )
+            if self.dual_frequency_enabled:
+                if dual_alignment is None:
+                    raise ValueError('Dual-frequency forward requires support-only alignment.')
+                return self.apply_dual_frequency(images, image_features, anchor, dual_alignment)[0]
+            return anchor
         return self.apply_incremental_residual(image_features, reference)
 
     @torch.no_grad()
@@ -1115,6 +1157,48 @@ class BiMC(nn.Module):
         output[eligible] = reranked
         detail['evidence'][eligible] = active_detail['evidence']
         return output, detail
+
+    @torch.no_grad()
+    def prepare_dual_alignment(self, state):
+        from models.dual_frequency import align_semantics
+        settings = self.cfg.TRAINER.BiMC.DUAL_FREQUENCY
+        frequency = self.cfg.TRAINER.BiMC.FREQUENCY
+        return align_semantics(
+            state['dual_statistics'], state['dual_description_candidates'], state['description_proto'],
+            top_k=frequency.DESCRIPTION_TOPK, temperature=frequency.DESCRIPTION_TEMPERATURE,
+            shot_tau=settings.SHOT_TAU, residualize=settings.RESIDUALIZE,
+            enabled=settings.ALIGNMENT, permutation=settings.SEMANTIC_PERMUTATION,
+        )
+
+    @torch.no_grad()
+    def apply_dual_frequency(self, images, image_features, anchor_scores, aligned):
+        from models.dual_frequency import apply_evidence
+        from models.frequency_consensus import pair_candidates
+        if self.dual_frequency_state is None:
+            raise RuntimeError('Initialize dual frequency at the base session before inference.')
+        settings = self.cfg.TRAINER.BiMC.DUAL_FREQUENCY
+        state = self.dual_frequency_state
+        strength = float(state['lambda'])
+        _, _, gap = pair_candidates(anchor_scores)
+        eligible = gap < strength
+        detail = {'eligible': eligible, 'encoded': torch.zeros_like(eligible),
+                  'evidence': gap.new_full(gap.shape, float('nan'))}
+        if strength == 0 or not eligible.any():
+            return anchor_scores, detail
+        before = self.image_encoding_counts['auxiliary']
+        frequency = self.extract_frequency_img_feature(
+            images[eligible], original_features=image_features[eligible],
+        )
+        output, active = apply_evidence(
+            anchor_scores[eligible], image_features[eligible], frequency, aligned,
+            state['scales'], strength, residualize=settings.RESIDUALIZE,
+            mode=settings.MODE, bands=settings.BAND_WEIGHTS,
+        )
+        result = anchor_scores.clone()
+        result[eligible] = output.to(result.dtype)
+        detail['encoded'][eligible] = self.image_encoding_counts['auxiliary'] > before
+        detail['evidence'][eligible] = active['evidence']
+        return result, detail
 
     def apply_incremental_residual(self, image_features, reference_scores):
         """Keep the original output exactly when the residual is disabled/zero."""

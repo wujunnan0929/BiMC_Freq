@@ -170,7 +170,9 @@ def _sequence_records(model, cfg, state, sequence):
         targets = labels.new_tensor([local[int(value)] for value in labels[query_indices]])
         yield {'stage': stage, 'scores': scorer(features[query_indices].float()),
                'features': auxiliary[query_indices].float(), 'stats': stats,
-               'targets': targets, 'reference_state': reference_state}
+               'targets': targets, 'reference_state': reference_state,
+               'support_indices': support_indices, 'query_indices': query_indices,
+               'class_ids': selected}
 
 
 def _empty_counts():

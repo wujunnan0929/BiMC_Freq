@@ -62,6 +62,7 @@ class Runner:
         self.dictionary_report = None
         self.consensus_report = None
         self.uncertainty_report = None
+        self.dual_frequency_report = None
         self.output_dir = Path(cfg.OUTPUT_DIR) if cfg.OUTPUT_DIR else None
         if self.output_dir is not None:
             self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -92,6 +93,14 @@ class Runner:
                 key: torch.cat([state['uncertainty_statistics'][key] for state in dict_list])
                 for key in ('mean', 'variance', 'count')
             }
+        if self.model.dual_frequency_enabled:
+            result['dual_statistics'] = {
+                key: torch.cat([state['dual_statistics'][key] for state in dict_list])
+                for key in ('mean', 'variance', 'count')
+            }
+            result['dual_description_candidates'] = torch.cat([
+                state['dual_description_candidates'] for state in dict_list
+            ])
         weights = [len(state['class_index']) for state in dict_list]
         covariance = torch.zeros_like(dict_list[0]['cov_image'])
         for weight, state in zip(weights, dict_list):
@@ -141,6 +150,7 @@ class Runner:
             'dictionary': self.dictionary_report, 'sessions': self.sessions,
             'consensus': self.consensus_report,
             'uncertainty': self.uncertainty_report,
+            'dual_frequency': self.dual_frequency_report,
             'image_encoding_counts': dict(self.model.image_encoding_counts),
             'summary': summarize_sessions(self.sessions) if self.sessions else None,
         }
@@ -176,6 +186,8 @@ class Runner:
             'consensus_calibration': self.consensus_report,
             'uncertainty_state': _cpu_state(self.model.uncertainty_state),
             'uncertainty_calibration': self.uncertainty_report,
+            'dual_frequency_state': _cpu_state(self.model.dual_frequency_state),
+            'dual_frequency_calibration': self.dual_frequency_report,
             'metrics': self.sessions,
         }
         # Boundary snapshot. Pretrained CLIP is identified, not duplicated.
@@ -191,6 +203,8 @@ class Runner:
             raise ValueError('BASE_ONLY requires residual dictionary learning enabled.')
         if self.cfg.TRAINER.BiMC.UNCERTAINTY.BASE_ONLY and not self.model.uncertainty_enabled:
             raise ValueError('UNCERTAINTY.BASE_ONLY requires UNCERTAINTY.ENABLED.')
+        if self.cfg.TRAINER.BiMC.DUAL_FREQUENCY.BASE_ONLY and not self.model.dual_frequency_enabled:
+            raise ValueError('DUAL_FREQUENCY.BASE_ONLY requires DUAL_FREQUENCY.ENABLED.')
         self._write_results('running')
         for task_id in range(self.data_manager.num_tasks):
             self.model.eval()
@@ -234,6 +248,18 @@ class Runner:
                     for key in ('alpha', 'temperature', 'prior_strength', 'covariance', 'ridge')
                     if key in self.model.uncertainty_state
                 })
+            if task_id == 0 and self.model.dual_frequency_enabled:
+                from engine.dual_frequency_calibration import initialize_dual_frequency
+                self.dual_frequency_report = initialize_dual_frequency(
+                    self.model, self.cfg, current, self.uncertainty_report,
+                )
+                if self.output_dir is not None:
+                    (self.output_dir / 'dual_frequency_calibration.json').write_text(
+                        json.dumps(self.dual_frequency_report, indent=2, allow_nan=False), encoding='utf-8',
+                    )
+                print('Dual frequency calibration:', {
+                    key: self.dual_frequency_report[key] for key in ('selected_lambda', 'scales', 'selection_status')
+                })
             states.append(current)
             merged = self.merge_dicts(states)
             fit_report = None
@@ -257,7 +283,8 @@ class Runner:
                         'frequency_description_candidates', 'uncertainty_features'):
                 current.pop(key, None)
             if (self.cfg.TRAINER.BiMC.RESIDUAL.BASE_ONLY
-                    or self.cfg.TRAINER.BiMC.UNCERTAINTY.BASE_ONLY):
+                    or self.cfg.TRAINER.BiMC.UNCERTAINTY.BASE_ONLY
+                    or self.cfg.TRAINER.BiMC.DUAL_FREQUENCY.BASE_ONLY):
                 self._save_checkpoint(task_id, states)
                 self._write_results('base_validation_completed')
                 print('Base-only validation complete; no benchmark test images were evaluated.')
@@ -284,6 +311,7 @@ class Runner:
                 getattr(self.model, 'base_frequency_vision_prototype', None),
                 self.model.consensus_state,
                 self.model.uncertainty_state,
+                self.model.dual_frequency_state,
             ])
             self.sessions.append(metrics)
             self.acc_list.append(round(metrics['accuracy'], 3))
@@ -308,6 +336,10 @@ class Runner:
         loader = self.data_manager.get_dataloader(task_id, source='test', mode='test')
         scores, references, targets = [], [], []
         eligible_rows, encoded_rows, evidence_rows, sample_ids = [], [], [], []
+        anchors = []
+        exact_anchor = True
+        dual_alignment = (self.model.prepare_dual_alignment(state_dict)
+                          if self.model.dual_frequency_enabled else None)
         encoding_start = dict(self.model.image_encoding_counts)
         exact_reference = True
         for batch in tqdm(loader):
@@ -330,6 +362,14 @@ class Runner:
                 output = self.model.apply_frequency_uncertainty(
                     images, features, reference, state_dict['uncertainty_statistics'],
                 )
+                if self.model.dual_frequency_enabled:
+                    anchor = output
+                    output, detail = self.model.apply_dual_frequency(images, features, anchor, dual_alignment)
+                    anchors.append(anchor.cpu())
+                    exact_anchor = exact_anchor and torch.equal(anchor, output)
+                    eligible_rows.append(detail['eligible'].cpu())
+                    encoded_rows.append(detail['encoded'].cpu())
+                    evidence_rows.append(detail['evidence'].cpu())
             else:
                 output = self.model.apply_incremental_residual(features, reference)
             exact_reference = exact_reference and torch.equal(output, reference)
@@ -356,13 +396,28 @@ class Runner:
             eligible=eligible, encoded=encoded,
         )
         metrics['reference_scores_exact_equal'] = exact_reference
+        if anchors:
+            anchor_scores = torch.cat(anchors).numpy()
+            metrics['anchor_accuracy'] = float(100 * np.mean(anchor_scores.argmax(1) == targets))
+            metrics['anchor_scores_exact_equal'] = exact_anchor
+            metrics['frequency_prediction_diagnostics'] = prediction_diagnostics(
+                anchor_scores, scores, targets, task_id, self.data_manager.class_index_in_task,
+                eligible=eligible, encoded=encoded,
+            )
+            metrics['dual_alignment'] = {
+                key: dual_alignment[key].mean(0).cpu().tolist()
+                for key in ('agreement', 'class_margin', 'band_margin', 'concentration', 'reliability')
+            }
         metrics['query_original_encodings'] = (
             self.model.image_encoding_counts['original'] - encoding_start['original']
         )
         metrics['query_auxiliary_encodings'] = (
             self.model.image_encoding_counts['auxiliary'] - encoding_start['auxiliary']
         )
-        if self.output_dir is not None and self.cfg.TRAINER.BiMC.CONSENSUS.SAVE_PREDICTIONS:
+        save_predictions = (self.cfg.TRAINER.BiMC.DUAL_FREQUENCY.SAVE_PREDICTIONS
+                            if self.model.dual_frequency_enabled
+                            else self.cfg.TRAINER.BiMC.CONSENSUS.SAVE_PREDICTIONS)
+        if self.output_dir is not None and save_predictions:
             first = references.argmax(1)
             remaining = references.copy()
             remaining[np.arange(len(first)), first] = -np.inf
@@ -377,6 +432,12 @@ class Runner:
             if eligible is not None:
                 payload.update(eligible=eligible, encoded=encoded,
                                evidence=torch.cat(evidence_rows).numpy())
+            if anchors:
+                anchor_first = anchor_scores.argmax(1)
+                anchor_remaining = anchor_scores.copy()
+                anchor_remaining[np.arange(len(anchor_first)), anchor_first] = -np.inf
+                payload.update(anchor_prediction=anchor_first,
+                               anchor_second_candidate=anchor_remaining.argmax(1))
             np.savez_compressed(self.output_dir / f'predictions_session_{task_id:02d}.npz',
                                 **payload)
         return metrics

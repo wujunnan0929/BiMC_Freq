@@ -373,6 +373,27 @@ See [the experiment protocol](docs/incremental_residual_experiments.md) and
 assumptions, limits, ablations, and the distinction from backbone LoRA. No
 benchmark improvement is claimed without running the full controlled matrix.
 
+## SAFD dual-modal semantic scales
+
+The frozen CLIP image branch uses SAFD views, and the text branch uses existing
+offline LLM descriptions for silhouettes, parts and fine details. Support-only
+class/scale discriminative alignment and bounded residual consensus correct the
+top-two predictions of an original-view GDA anchor. No optimizer or backward
+pass is used; labeled support statistics and base validation are still required.
+
+```bash
+python tools/run_safd_dual_experiments.py --suite core --seeds 1 2 3 --dry-run
+# Use --execute to run; add --opts DATASET.ROOT /path/to/datasets as needed.
+```
+
+Use `configs/trainers/bimc_safd_dual.yaml` for a single run. The core matrix
+includes the BiMC and original-GDA references, FFT/SAFD visual GDA, paired
+FFT/SAFD dual-modal methods, and exact zero controls. The extended matrix tests
+visual/text evidence, residualization, alignment, semantic scale permutation,
+ordinary descriptions and individual scales. See [design and analysis](docs/safd_dual_design.md)
+for equations, server commands, audits, existing results and limitations.
+The new method's full CUB accuracy has not been established.
+
 ## Acknowledgment
 
 In this repository, we build our code based on the following excellent open-source projects. We sincerely thank all the authors for sharing their great work:
