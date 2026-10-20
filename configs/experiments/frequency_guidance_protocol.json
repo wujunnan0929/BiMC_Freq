@@ -1,0 +1,293 @@
+{
+  "schema_version": 1,
+  "kind": "experiment_protocol_not_yacs_training_config",
+  "date": "2026-10-20",
+  "status": "implemented_not_benchmarked",
+  "implementation_status": "G0_to_G4_calibrator_controls_launcher_and_view_audit_available",
+  "document": "docs/frequency_guidance_experiment_protocol.md",
+  "datasets": {
+    "cub200": {
+      "base_classes": 100,
+      "increment_classes_per_session": 10,
+      "increment_sessions": 10,
+      "increment_shot": 5,
+      "beta": 0.3,
+      "ensemble_alpha": 0.8,
+      "pseudo_base_classes": 50,
+      "pseudo_validation_classes": 50,
+      "pseudo_increment_sizes": [
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5
+      ]
+    },
+    "cifar100": {
+      "base_classes": 60,
+      "increment_classes_per_session": 5,
+      "increment_sessions": 8,
+      "increment_shot": 5,
+      "beta": 0.65,
+      "ensemble_alpha": 0.6,
+      "pseudo_base_classes": 30,
+      "pseudo_validation_classes": 30,
+      "pseudo_increment_sizes": [
+        2,
+        3,
+        2,
+        3,
+        2,
+        3,
+        2,
+        3
+      ]
+    },
+    "miniimagenet": {
+      "base_classes": 60,
+      "increment_classes_per_session": 5,
+      "increment_sessions": 8,
+      "increment_shot": 5,
+      "beta": 0.65,
+      "ensemble_alpha": 0.6,
+      "pseudo_base_classes": 30,
+      "pseudo_validation_classes": 30,
+      "pseudo_increment_sizes": [
+        2,
+        3,
+        2,
+        3,
+        2,
+        3,
+        2,
+        3
+      ]
+    }
+  },
+  "fixed": {
+    "backbone": "ViT-B/16",
+    "precision": "fp32",
+    "image_batch_size": 32,
+    "lambda_I": 0.1,
+    "lambda_T": 0.5,
+    "tau_visual": 16,
+    "tau_text": 16,
+    "eta": 0.5,
+    "band_weights": [
+      0.3333333333333333,
+      0.3333333333333333,
+      0.3333333333333333
+    ],
+    "using_ensemble": true,
+    "gamma_base": 1.0,
+    "gamma_inc": 5.0,
+    "frequency_backend": "safd",
+    "view_mode": "natural",
+    "low_terms": 8,
+    "middle_terms": 24,
+    "original_blend": [
+      0.25,
+      0.1
+    ],
+    "high_enhance": 0.25,
+    "max_detail_rms": 0.04,
+    "safd_radii": [
+      0,
+      0.3,
+      0.6,
+      0.8
+    ],
+    "safd_angles": 16,
+    "safd_max_signals": 96,
+    "safd_batch_size": 2,
+    "candidates_per_class_per_scale": 5,
+    "frequency_base_support_budget": "all_available_base_training_support",
+    "extra_gda": false,
+    "dual_prediction_repair": false,
+    "consensus": false,
+    "router": false,
+    "residual_head": false,
+    "query_auxiliary_frequency_encodings": 0
+  },
+  "methods": [
+    {
+      "id": "G0",
+      "name": "BiMC without visual guidance",
+      "implementation": "available_as_G0",
+      "lambda_I": 0,
+      "rho_grid": null,
+      "formula": "v_guided = v0"
+    },
+    {
+      "id": "G1",
+      "name": "Original full BiMC",
+      "implementation": "available_as_G1",
+      "lambda_I": 0.1,
+      "rho_grid": null,
+      "formula": "a0 = softmax(16*cos(v0_c,v0_b))"
+    },
+    {
+      "id": "G2",
+      "name": "Visual scale relation guidance",
+      "implementation": "available_as_G2",
+      "lambda_I": 0.1,
+      "rho_grid": [
+        0,
+        0.25,
+        0.5,
+        0.75,
+        1
+      ],
+      "formula": "a = (1-rho)*a0 + rho*mean_s(p_s)"
+    },
+    {
+      "id": "G3",
+      "name": "Unpaired marginal cross-modal relation guidance",
+      "implementation": "available_as_G3",
+      "lambda_I": 0.1,
+      "rho_grid": [
+        0,
+        0.25,
+        0.5,
+        0.75,
+        1
+      ],
+      "formula": "a = (1-rho)*a0 + rho*normalize(mean_s(p_s)^(1-eta)*mean_s(q_s)^eta)"
+    },
+    {
+      "id": "G4",
+      "name": "Paired scale cross-modal relation guidance",
+      "implementation": "available_as_G4",
+      "lambda_I": 0.1,
+      "rho_grid": [
+        0,
+        0.25,
+        0.5,
+        0.75,
+        1
+      ],
+      "formula": "r_s = normalize(p_s^(1-eta)*q_s^eta); a = (1-rho)*a0 + rho*mean_s(r_s)"
+    }
+  ],
+  "selection": {
+    "source": "base_training_only",
+    "class_split": "disjoint_half_base_bank_half_pseudo_novel",
+    "seed_offset": 10101,
+    "sequences": 20,
+    "old_support": "all_training_except_old_queries",
+    "old_query_per_class": 5,
+    "new_support_per_class": 5,
+    "new_query_per_class": 5,
+    "audit_images_per_validation_class": 5,
+    "audit_reservation": "fixed_per_class_across_all_sequences_excluded_from_selection",
+    "minimum_training_images_per_validation_class": 15,
+    "objective": "mean_incremental_stage_harmonic_accuracy_of_pseudo_base_and_all_arrived_pseudo_novel",
+    "maximum_mean_old_drop_pp_vs_G1": 0.2,
+    "maximum_mean_new_drop_pp_vs_G1": 0.2,
+    "tie_break": "smallest_rho",
+    "rho_zero_reference": "G1",
+    "refit": "all_real_base_training_support_after_freezing_rho",
+    "forbidden": [
+      "benchmark_test_selection",
+      "future_class_visual_data",
+      "query_fitted_prototypes",
+      "oracle_audit_fitted_parameters"
+    ]
+  },
+  "seeds": {
+    "exploratory": [
+      1,
+      2,
+      3
+    ],
+    "paper": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "run_budget": {
+    "cub_exploratory": 15,
+    "other_datasets_exploratory": 30,
+    "all_exploratory": 45,
+    "additional_paper_seeds": 30,
+    "all_paper": 75,
+    "ablations_included": false,
+    "cub_key_controls_exploratory": 15,
+    "all_key_controls_paper": 75,
+    "all_additional_controls_paper": 60,
+    "all_primary_and_controls_paper": 215,
+    "mini_matched_budget_extra_reference": 5
+  },
+  "mandatory_ablation_controls": [
+    "uniform_semantics_temperature_control",
+    "semantic_scale_permutation_2_0_1",
+    "ordinary_text_matched_unique_prompt_budget",
+    "repeated_original_visual_features",
+    "three_generic_visual_views"
+  ],
+  "additional_ablation_controls": [
+    "low_only",
+    "middle_only",
+    "high_only",
+    "fft_backend_with_distortion_audit"
+  ],
+  "metrics": [
+    "final_accuracy",
+    "average_session_accuracy",
+    "final_base_accuracy",
+    "final_all_incremental_accuracy",
+    "final_harmonic_accuracy",
+    "novel_to_original_base_error_rate",
+    "original_base_to_novel_error_rate",
+    "paired_deltas",
+    "prototype_reference_error_on_base_validation_audit_only",
+    "relation_entropy",
+    "guidance_neighbors",
+    "rho_zero_rate",
+    "support_encoding_seconds",
+    "calibration_seconds",
+    "query_seconds",
+    "total_wall_seconds",
+    "peak_gpu_memory",
+    "retained_prototype_bytes"
+  ],
+  "output_requirements": [
+    "config_and_source_hashes",
+    "clip_weight_hash",
+    "description_hashes",
+    "paired_support_manifest",
+    "pseudo_sequence_sample_ids",
+    "candidate_validation_scores",
+    "selected_rho",
+    "per_session_metrics",
+    "per_query_predictions",
+    "per_class_guidance_diagnostics",
+    "encoding_counts",
+    "cost_report"
+  ],
+  "interpretation": {
+    "rho_zero": "fallback_to_G1_not_frequency_gain",
+    "uniform_semantics_match": "possible_probability_smoothing_explanation",
+    "scale_permutation_match": "no_evidence_of_scale_correspondence_contribution",
+    "G4_below_G0": "no_evidence_that_visual_guidance_should_be_retained",
+    "significance": "mean_and_sample_sd_only_no_automatic_significance_claim"
+  },
+  "implementation_date": "2026-10-21",
+  "launcher": "tools/run_frequency_guidance_experiments.py",
+  "ubuntu_instructions": "docs/frequency_guidance_ubuntu.md",
+  "ordinary_text_control_budget": {
+    "cub200": 15,
+    "cifar100": 15,
+    "miniimagenet": 9,
+    "mini_frequency_reference_prompts_per_band": 3,
+    "main_prompts_per_band_unchanged": 5
+  }
+}

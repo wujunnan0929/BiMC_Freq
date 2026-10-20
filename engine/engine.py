@@ -1,5 +1,6 @@
 import json
 import time
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -51,6 +52,7 @@ def _tensor_bytes(values):
 
 class Runner:
     def __init__(self, cfg):
+        self.wall_start = time.perf_counter()
         self.cfg = cfg
         self.data_manager = DatasetManager(cfg)
         self.device = cfg.DEVICE.DEVICE_NAME
@@ -63,6 +65,9 @@ class Runner:
         self.consensus_report = None
         self.uncertainty_report = None
         self.dual_frequency_report = None
+        self.guidance_report = None
+        if str(self.device).startswith('cuda'):
+            torch.cuda.reset_peak_memory_stats()
         self.output_dir = Path(cfg.OUTPUT_DIR) if cfg.OUTPUT_DIR else None
         if self.output_dir is not None:
             self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -151,6 +156,11 @@ class Runner:
             'consensus': self.consensus_report,
             'uncertainty': self.uncertainty_report,
             'dual_frequency': self.dual_frequency_report,
+            'guidance': self.guidance_report,
+            'total_wall_seconds': time.perf_counter() - self.wall_start,
+            'peak_gpu_memory_bytes': (torch.cuda.max_memory_allocated()
+                                      if str(self.device).startswith('cuda') else None),
+            'clip_weight_sha256': getattr(self.model.clip_model, 'clip_weight_sha256', None),
             'image_encoding_counts': dict(self.model.image_encoding_counts),
             'summary': summarize_sessions(self.sessions) if self.sessions else None,
         }
@@ -188,6 +198,8 @@ class Runner:
             'uncertainty_calibration': self.uncertainty_report,
             'dual_frequency_state': _cpu_state(self.model.dual_frequency_state),
             'dual_frequency_calibration': self.dual_frequency_report,
+            'guidance_state': _cpu_state(self.model.guidance_state),
+            'guidance_calibration': self.guidance_report,
             'metrics': self.sessions,
         }
         # Boundary snapshot. Pretrained CLIP is identified, not duplicated.
@@ -205,6 +217,8 @@ class Runner:
             raise ValueError('UNCERTAINTY.BASE_ONLY requires UNCERTAINTY.ENABLED.')
         if self.cfg.TRAINER.BiMC.DUAL_FREQUENCY.BASE_ONLY and not self.model.dual_frequency_enabled:
             raise ValueError('DUAL_FREQUENCY.BASE_ONLY requires DUAL_FREQUENCY.ENABLED.')
+        if self.cfg.TRAINER.BiMC.GUIDANCE.BASE_ONLY and not self.model.guidance_enabled:
+            raise ValueError('GUIDANCE.BASE_ONLY requires GUIDANCE.ENABLED.')
         self._write_results('running')
         for task_id in range(self.data_manager.num_tasks):
             self.model.eval()
@@ -219,6 +233,36 @@ class Runner:
                 names, loader, class_index=classes,
                 calibrate_novel_vision_proto=self.cfg.TRAINER.BiMC.VISION_CALIBRATION,
             )
+            if str(self.device).startswith('cuda'):
+                torch.cuda.synchronize()
+            support_build_seconds = time.perf_counter() - start
+            current['data_source'], current['task_id'] = 'base_training_only' if task_id == 0 else 'incremental_training_only', task_id
+            if task_id == 0 and self.model.guidance_enabled:
+                from engine.guidance_calibration import initialize_guidance
+                self.guidance_report = initialize_guidance(self.model, self.cfg, current)
+                paths = {'ordinary_text': self.cfg.DATASET.GPT_PATH}
+                g = self.cfg.TRAINER.BiMC.GUIDANCE
+                if g.MODE != 'visual' and g.SEMANTIC_SOURCE == 'explicit':
+                    paths['scale_text'] = self.cfg.TRAINER.BiMC.FREQUENCY.EXPLICIT_DESCRIPTION_PATH
+                self.guidance_report['provenance'] = {
+                    'clip_weight_sha256': getattr(self.model.clip_model, 'clip_weight_sha256', None),
+                    'config_sha256': hashlib.sha256(self.cfg.dump().encode()).hexdigest(),
+                    'description_files': {name: {'path': str(path), 'sha256': hashlib.sha256(Path(path).read_bytes()).hexdigest()}
+                                          for name, path in paths.items() if Path(path).is_file()},
+                    'support_transform': repr(getattr(self.data_manager, 'test_transform', None)),
+                    'support_sample_ids_sha256': hashlib.sha256(json.dumps(current['guidance_sample_ids']).encode()).hexdigest(),
+                }
+                if self.output_dir is not None:
+                    (self.output_dir / 'guidance_calibration.json').write_text(
+                        json.dumps(self.guidance_report, indent=2, allow_nan=False), encoding='utf-8')
+                print('Frequency relation guidance:', self.guidance_report['selected_rho'],
+                      self.guidance_report['selection_status'])
+            if self.model.guidance_enabled and self.output_dir is not None:
+                detail = {'class_ids': [int(c) for c in classes],
+                          'sample_ids': current['guidance_sample_ids'],
+                          'diagnostics': current.get('guidance_diagnostics')}
+                (self.output_dir / f'guidance_session_{task_id:02d}.json').write_text(
+                    json.dumps(detail, allow_nan=False), encoding='utf-8')
             if self.model.frequency_router is not None:
                 self.model.frequency_router.eval().requires_grad_(False)
             if task_id == 0 and self.model.consensus_enabled:
@@ -280,11 +324,12 @@ class Runner:
 
             # Release sample-level image caches before proceeding to evaluation.
             for key in ('images_features', 'images_targets', 'frequency_features',
-                        'frequency_description_candidates', 'uncertainty_features'):
+                        'frequency_description_candidates', 'uncertainty_features', 'guidance_sample_ids'):
                 current.pop(key, None)
             if (self.cfg.TRAINER.BiMC.RESIDUAL.BASE_ONLY
                     or self.cfg.TRAINER.BiMC.UNCERTAINTY.BASE_ONLY
-                    or self.cfg.TRAINER.BiMC.DUAL_FREQUENCY.BASE_ONLY):
+                    or self.cfg.TRAINER.BiMC.DUAL_FREQUENCY.BASE_ONLY
+                    or self.cfg.TRAINER.BiMC.GUIDANCE.BASE_ONLY):
                 self._save_checkpoint(task_id, states)
                 self._write_results('base_validation_completed')
                 print('Base-only validation complete; no benchmark test images were evaluated.')
@@ -295,6 +340,9 @@ class Runner:
                 torch.cuda.synchronize()
             metrics['eval_seconds'] = time.perf_counter() - start
             metrics['fit_seconds'] = fit_seconds
+            metrics['support_build_seconds'] = support_build_seconds
+            metrics['guidance_calibration_seconds'] = (self.guidance_report['calibration_seconds']
+                                                       if task_id == 0 and self.guidance_report else 0.)
             metrics['support_image_encodings'] = support_encodings
             metrics['forgetting'] = compute_forgetting(metrics['task_acc'], self.sessions)
             metrics['fit'] = fit_report
@@ -312,6 +360,7 @@ class Runner:
                 self.model.consensus_state,
                 self.model.uncertainty_state,
                 self.model.dual_frequency_state,
+                self.model.guidance_state,
             ])
             self.sessions.append(metrics)
             self.acc_list.append(round(metrics['accuracy'], 3))
@@ -334,6 +383,7 @@ class Runner:
             len(self.data_manager.class_index_in_task[0]),
         )
         loader = self.data_manager.get_dataloader(task_id, source='test', mode='test')
+        query_encoding_seconds, query_classification_seconds = 0., 0.
         scores, references, targets = [], [], []
         eligible_rows, encoded_rows, evidence_rows, sample_ids = [], [], [], []
         anchors = []
@@ -344,11 +394,18 @@ class Runner:
         exact_reference = True
         for batch in tqdm(loader):
             images, labels = self.parse_batch(batch)
+            if str(self.device).startswith('cuda'):
+                torch.cuda.synchronize()
+            encoding_clock = time.perf_counter()
             features = self.model.extract_img_feature(images)
             frequency_features = (
                 self.model.extract_frequency_img_feature(images)
                 if self.model.frequency_fusion_enabled else None
             )
+            if str(self.device).startswith('cuda'):
+                torch.cuda.synchronize()
+            query_encoding_seconds += time.perf_counter() - encoding_clock
+            classification_clock = time.perf_counter()
             reference = scorer(features, frequency_features)
             if self.model.consensus_enabled:
                 output, detail = self.model.apply_frequency_consensus(
@@ -372,6 +429,9 @@ class Runner:
                     evidence_rows.append(detail['evidence'].cpu())
             else:
                 output = self.model.apply_incremental_residual(features, reference)
+            if str(self.device).startswith('cuda'):
+                torch.cuda.synchronize()
+            query_classification_seconds += time.perf_counter() - classification_clock
             exact_reference = exact_reference and torch.equal(output, reference)
             identifiers = batch.get('global_index', batch.get('sample_id'))
             if identifiers is None:
@@ -414,9 +474,18 @@ class Runner:
         metrics['query_auxiliary_encodings'] = (
             self.model.image_encoding_counts['auxiliary'] - encoding_start['auxiliary']
         )
+        metrics['query_encoding_seconds'] = query_encoding_seconds
+        metrics['query_classification_seconds'] = query_classification_seconds
+        original_base = len(self.data_manager.class_index_in_task[0])
+        is_base, predicted_base = targets < original_base, scores.argmax(1) < original_base
+        metrics['novel_to_original_base_rate'] = (float(100 * predicted_base[~is_base].mean())
+                                                  if (~is_base).any() else None)
+        metrics['original_base_to_novel_rate'] = float(100 * (~predicted_base[is_base]).mean())
         save_predictions = (self.cfg.TRAINER.BiMC.DUAL_FREQUENCY.SAVE_PREDICTIONS
                             if self.model.dual_frequency_enabled
                             else self.cfg.TRAINER.BiMC.CONSENSUS.SAVE_PREDICTIONS)
+        if self.model.guidance_enabled:
+            save_predictions = self.cfg.TRAINER.BiMC.GUIDANCE.SAVE_PREDICTIONS
         if self.output_dir is not None and save_predictions:
             first = references.argmax(1)
             remaining = references.copy()

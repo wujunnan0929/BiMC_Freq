@@ -1,0 +1,72 @@
+SEED: 1
+DEVICE:
+  DEVICE_NAME: "cuda"
+  GPU_ID: "0;"
+DATALOADER:
+  TRAIN:
+    BATCH_SIZE_BASE: 32
+    BATCH_SIZE_INC: 32
+  TEST:
+    BATCH_SIZE: 32
+  NUM_WORKERS: 4
+MODEL:
+  BACKBONE:
+    NAME: "ViT-B/16"
+TRAINER:
+  BiMC:
+    PREC: "fp32"
+    VISION_CALIBRATION: True
+    LAMBDA_I: 0.1
+    TAU: 16
+    TEXT_CALIBRATION: True
+    LAMBDA_T: 0.5
+    USING_ENSEMBLE: True
+    GAMMA_BASE: 1.0
+    GAMMA_INC: 5.0
+    RESIDUAL:
+      ENABLED: False
+      SAVE_CHECKPOINT: True
+    CONSENSUS:
+      ENABLED: False
+    UNCERTAINTY:
+      ENABLED: False
+    DUAL_FREQUENCY:
+      ENABLED: False
+    FREQUENCY:
+      ENABLED: False
+      BACKEND: "safd"
+      VIEW_MODE: "natural"
+      HIGH_ENHANCE: 0.25
+      USE_EXPLICIT_DESCRIPTIONS: True
+      EXPLICIT_DESCRIPTION_PATH: "auto"
+      ROUTER:
+        ENABLED: False
+      SAFD:
+        LOW_TERMS: 8
+        MIDDLE_TERMS: 24
+        RADII: [0.0, 0.3, 0.6, 0.8]
+        ANGLES: 16
+        MAX_SIGNALS: 96
+        BATCH_SIZE: 2
+        ORIGINAL_BLEND: [0.25, 0.1]
+        MAX_DETAIL_RMS: 0.04
+    GUIDANCE:
+      ENABLED: True
+      MODE: "paired"
+      VIEW_CONTROL: "frequency"
+      SEMANTIC_SOURCE: "explicit"
+      CANDIDATES_PER_BAND: 5
+      SEMANTIC_PERMUTATION: [0, 1, 2]
+      BAND_WEIGHTS: [1.0, 1.0, 1.0]
+      ETA: 0.5
+      TAU_TEXT: 16.0
+      RHO: 0.5
+      RHO_GRID: [0.0, 0.25, 0.5, 0.75, 1.0]
+      AUTO_CALIBRATE: True
+      VAL_SEQUENCES: 20
+      SHOT: 5
+      QUERY: 5
+      AUDIT_IMAGES: 5
+      MAX_GROUP_DROP_PP: 0.2
+      BASE_ONLY: False
+      SAVE_PREDICTIONS: True

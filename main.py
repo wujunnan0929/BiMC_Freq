@@ -183,6 +183,31 @@ def extend_cfg(cfg):
     dual.BASE_ONLY = False
     dual.SAVE_PREDICTIONS = True
 
+    # Support-only base-relation guidance; never adds query frequency encodings.
+    cfg.TRAINER.BiMC.GUIDANCE = CN()
+    guidance = cfg.TRAINER.BiMC.GUIDANCE
+    guidance.ENABLED = False
+    guidance.MODE = 'paired'
+    guidance.VIEW_CONTROL = 'frequency'
+    guidance.SEMANTIC_SOURCE = 'explicit'
+    guidance.CANDIDATES_PER_BAND = 5
+    guidance.SEMANTIC_PERMUTATION = [0, 1, 2]
+    guidance.BAND_WEIGHTS = [1.0, 1.0, 1.0]
+    guidance.ETA = 0.5
+    guidance.TAU_TEXT = 16.0
+    guidance.RHO = 0.5
+    guidance.RHO_GRID = [0.0, 0.25, 0.5, 0.75, 1.0]
+    guidance.AUTO_CALIBRATE = True
+    guidance.CALIBRATION_SEED = -1
+    guidance.VAL_SEQUENCES = 20
+    guidance.SHOT = 5
+    guidance.QUERY = 5
+    guidance.AUDIT_IMAGES = 5
+    guidance.STAGE_SIZES = []
+    guidance.MAX_GROUP_DROP_PP = 0.2
+    guidance.BASE_ONLY = False
+    guidance.SAVE_PREDICTIONS = True
+
     # Frequency-aware prototype calibration.  The legacy path is training-free;
     # an optional base-session residual router can be enabled below.  Frequency
     # mode defaults to off so existing BiMC configs reproduce the original method.
@@ -285,7 +310,9 @@ def setup_cfg(dataset_cfg_file, method_cfg_file, opts=None):
 
     frequency = cfg.TRAINER.BiMC.FREQUENCY
     dual = cfg.TRAINER.BiMC.DUAL_FREQUENCY
-    needs_explicit = ((dual.ENABLED and dual.SEMANTIC_SOURCE == 'explicit')
+    guidance = cfg.TRAINER.BiMC.GUIDANCE
+    needs_explicit = ((guidance.ENABLED and guidance.MODE != 'visual' and guidance.SEMANTIC_SOURCE == 'explicit')
+                      or (dual.ENABLED and dual.SEMANTIC_SOURCE == 'explicit')
                       or (frequency.USE_EXPLICIT_DESCRIPTIONS and
                           (frequency.ENABLED or cfg.TRAINER.BiMC.CONSENSUS.ENABLED)))
     if frequency.EXPLICIT_DESCRIPTION_PATH == 'auto' or (needs_explicit and not frequency.EXPLICIT_DESCRIPTION_PATH):
@@ -316,6 +343,8 @@ def main():
 
     cfg = setup_cfg(data_cfg, train_cfg, args.opts)
 
+    from models.frequency_guidance import validate_settings
+    validate_settings(cfg)
     from utils.frequency_descriptions import validate_frequency_inputs
     validate_frequency_inputs(cfg)
 

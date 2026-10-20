@@ -130,7 +130,13 @@ def load_explicit_descriptions(path, class_names, *, exact=False, dataset=None):
 def validate_frequency_inputs(cfg):
     """Runtime preflight, before loading datasets, drawing supports or loading CLIP."""
     f, d = cfg.TRAINER.BiMC.FREQUENCY, cfg.TRAINER.BiMC.DUAL_FREQUENCY
-    requires = ((d.ENABLED and d.SEMANTIC_SOURCE == 'explicit')
+    g = cfg.TRAINER.BiMC.GUIDANCE
+    needs_guidance = g.ENABLED and g.MODE != 'visual'
+    if needs_guidance and g.SEMANTIC_SOURCE == 'ordinary':
+        validate_ordinary_guidance_descriptions(cfg.DATASET.GPT_PATH, dataset_class_names(cfg.DATASET.NAME),
+                                                g.CANDIDATES_PER_BAND)
+    requires = ((needs_guidance and g.SEMANTIC_SOURCE == 'explicit')
+                or (d.ENABLED and d.SEMANTIC_SOURCE == 'explicit')
                 or (f.USE_EXPLICIT_DESCRIPTIONS and
                     (f.ENABLED or cfg.TRAINER.BiMC.CONSENSUS.ENABLED)))
     if not requires:
@@ -138,4 +144,24 @@ def validate_frequency_inputs(cfg):
     path = description_path(cfg.DATASET.NAME, f.EXPLICIT_DESCRIPTION_PATH)
     candidates = load_explicit_descriptions(path, dataset_class_names(cfg.DATASET.NAME),
                                             exact=True, dataset=cfg.DATASET.NAME)
+    if needs_guidance and g.SEMANTIC_SOURCE == 'explicit' and len(candidates[0]['low']) < g.CANDIDATES_PER_BAND:
+        raise ValueError(f'GUIDANCE requires at least {g.CANDIDATES_PER_BAND} unique descriptions per class/band.')
+    if needs_guidance and g.SEMANTIC_SOURCE == 'explicit':
+        for prompts in candidates:
+            for band in BANDS:
+                if len(set(text.strip().lower() for text in prompts[band][:g.CANDIDATES_PER_BAND])) != g.CANDIDATES_PER_BAND:
+                    raise ValueError('GUIDANCE descriptions must be unique within each class/band.')
     return {'path': str(path), 'classes': len(candidates), 'candidates_per_band': len(candidates[0]['low'])}
+
+
+def validate_ordinary_guidance_descriptions(path, class_names, candidates_per_band=5):
+    prompts = json.loads(Path(path).read_text(encoding='utf-8'))
+    normalized = {normalize_name(name): values for name, values in prompts.items()}
+    needed = 3 * candidates_per_band
+    for name in class_names:
+        values = normalized.get(normalize_name(name))
+        if (not isinstance(values, list) or len(values) < needed
+                or not all(isinstance(v, str) and v.strip() for v in values)
+                or len(set(v.strip().lower() for v in values[:needed])) != needed):
+            raise ValueError(f'Ordinary-text guidance control needs {needed} distinct descriptions per class; invalid class: {name}.')
+    return {'classes': len(class_names), 'unique_prompts_per_class': needed}

@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import models.clip.clip as clip
 import json
 import math
+import hashlib
 
 from models.frequency import (
     build_frequency_decomposer,
@@ -37,6 +38,11 @@ def load_clip_to_cpu(cfg):
         state_dict = torch.load(model_path, map_location="cpu")
 
     model = clip.build_model(state_dict or model.state_dict())
+    weight_hash = hashlib.sha256()
+    with open(model_path, 'rb') as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b''):
+            weight_hash.update(block)
+    model.clip_weight_sha256 = weight_hash.hexdigest()
 
     return model
 
@@ -69,9 +75,14 @@ class BiMC(nn.Module):
         self.uncertainty_state = None
         self.dual_frequency_enabled = cfg.TRAINER.BiMC.DUAL_FREQUENCY.ENABLED
         self.dual_frequency_state = None
+        self.guidance_enabled = cfg.TRAINER.BiMC.GUIDANCE.ENABLED
+        self.guidance_state = None
+        if self.guidance_enabled:
+            from models.frequency_guidance import validate_settings
+            validate_settings(cfg)
         self.frequency_fusion_enabled = cfg.TRAINER.BiMC.FREQUENCY.ENABLED
         self.frequency_enabled = (self.frequency_fusion_enabled or self.consensus_enabled
-                                  or self.dual_frequency_enabled
+                                  or self.dual_frequency_enabled or self.guidance_enabled
                                   or (self.uncertainty_enabled
                                       and cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL in ('frequency', 'joint')))
         self.image_encoding_counts = {'original': 0, 'auxiliary': 0}
@@ -215,16 +226,21 @@ class BiMC(nn.Module):
 
     @torch.no_grad()
     def inference_explicit_frequency_description_candidates(
-        self, class_names, description_path
+        self, class_names, description_path, max_candidates=None
     ):
         """Encode validated dataset-specific descriptions as ``[C, B, K, D]``."""
         candidates = load_explicit_descriptions(description_path, class_names)
         band_names = ("low", "middle", "high")
+        if max_candidates is not None and (max_candidates < 1 or any(
+                len(prompts[band]) < max_candidates for prompts in candidates for band in band_names)):
+            raise ValueError('Requested frequency description budget exceeds the validated bank.')
         class_embeddings = []
         for class_prompts in candidates:
             band_embeddings = []
             for band_name in band_names:
                 descriptions = class_prompts[band_name]
+                if max_candidates is not None:
+                    descriptions = descriptions[:max_candidates]
                 tokens = clip.tokenize(descriptions).to(self.device)
                 embeddings = self.clip_model.encode_text(tokens)
                 band_embeddings.append(F.normalize(embeddings, dim=-1))
@@ -237,18 +253,24 @@ class BiMC(nn.Module):
         all_features = []
         all_labels = []
         all_frequency_features = []
+        sample_ids = []
         for batch in loader:
             images, labels = self.parse_batch(batch)
             raw_features = self.extract_img_feature(images)
             features = F.normalize(raw_features, dim=-1)
             all_features.append(features)
             all_labels.append(labels)
+            identifiers = batch.get('global_index', batch.get('sample_id'))
+            if identifiers is None:
+                identifiers = torch.arange(len(sample_ids), len(sample_ids) + len(labels))
+            sample_ids.extend(int(i) for i in torch.as_tensor(identifiers).cpu().tolist())
             if self.frequency_enabled:
                 all_frequency_features.append(
                     self.extract_frequency_img_feature(images, original_features=raw_features)
                 )
         all_features = torch.cat(all_features, dim=0)
         all_labels = torch.cat(all_labels, dim=0)
+        self._last_support_ids = sample_ids
         if class_index is None:
             ordered_labels = [int(label) for label in torch.unique(all_labels)]
         else:
@@ -718,9 +740,43 @@ class BiMC(nn.Module):
         # Explicit prompt selection must use only the current session's raw
         # support-set prototypes, before optional novel-to-base calibration.
         frequency_grounding_proto = frequency_image_proto
+        guidance_state = {}
+        if self.guidance_enabled:
+            from models.frequency_guidance import relation_distributions, settings_kwargs, update_prototypes, diagnostics
+            g = self.cfg.TRAINER.BiMC.GUIDANCE
+            semantic = None
+            if g.MODE != 'visual' and g.SEMANTIC_SOURCE == 'explicit':
+                candidates = self.inference_explicit_frequency_description_candidates(
+                    class_names, self.cfg.TRAINER.BiMC.FREQUENCY.EXPLICIT_DESCRIPTION_PATH,
+                    max_candidates=g.CANDIDATES_PER_BAND)
+                if candidates.shape[2] < g.CANDIDATES_PER_BAND:
+                    raise ValueError('GUIDANCE explicit prompt bank is smaller than CANDIDATES_PER_BAND.')
+                candidates = candidates[:, :, :g.CANDIDATES_PER_BAND]
+                semantic = F.normalize(candidates.float().mean(2), dim=-1)
+            elif g.MODE != 'visual' and g.SEMANTIC_SOURCE == 'ordinary':
+                count = 3 * g.CANDIDATES_PER_BAND
+                groups = [description_features[description_targets == int(c)][:count] for c in class_index]
+                if any(len(values) != count for values in groups):
+                    raise ValueError(f'Ordinary guidance needs {count} unique prompts per class; cannot repeat prompts.')
+                semantic = F.normalize(torch.stack(groups).reshape(len(groups), 3, -1, images_proto.shape[-1]).mean(2), dim=-1)
+            guidance_state = {'guidance_visual_proto': frequency_image_proto,
+                              'guidance_text_proto': semantic,
+                              'guidance_sample_ids': self._last_support_ids}
+            if cls_begin_index != 0:
+                bank = self.guidance_state
+                if bank is None:
+                    raise RuntimeError('Initialize GUIDANCE on the base session before incremental adaptation.')
+                relations = relation_distributions(bank['base_visual'], images_proto,
+                                                   bank['base_bands'], frequency_image_proto,
+                                                   bank['base_text'], semantic, **settings_kwargs(self.cfg))
+                raw = images_proto
+                images_proto = update_prototypes(bank['base_visual'], raw, relations, bank['rho'],
+                                                 self.cfg.TRAINER.BiMC.LAMBDA_I, self.soft_calibration)
+                guidance_state['guidance_diagnostics'] = diagnostics(relations, raw, images_proto,
+                                                                      bank['base_ids'], bank['rho'])
 
         if cls_begin_index != 0:
-            if calibrate_novel_vision_proto:
+            if calibrate_novel_vision_proto and not self.guidance_enabled:
                 print(f'calibrate vision proto on class [{class_index}]')
                 images_proto = self.soft_calibration(self.base_vision_prototype, images_proto)
                 if (
@@ -942,6 +998,9 @@ class BiMC(nn.Module):
             'sample_cnt': len(images_features)
         }
         state.update(frequency_state)
+        state.update(guidance_state)
+        if self.guidance_enabled:
+            state['frequency_features'] = all_frequency_features
         state['raw_image_mean'] = raw_image_mean
         if self.uncertainty_enabled:
             from models.frequency_uncertainty import class_statistics
@@ -1306,6 +1365,9 @@ class BiMC(nn.Module):
         images = images.to(self.device)
         control = (self.cfg.TRAINER.BiMC.CONSENSUS.VIEW_CONTROL
                    if self.consensus_enabled else 'frequency')
+        if self.guidance_enabled:
+            control = self.cfg.TRAINER.BiMC.GUIDANCE.VIEW_CONTROL
+            control = 'original' if control == 'repeat' else control
         if control == 'original' or (
                 control == 'frequency' and self.frequency_decomposer.view_mode == "original"):
             if original_features is None:
@@ -1317,7 +1379,10 @@ class BiMC(nn.Module):
             # Deterministic ordinary views, with the same three-encoder budget.
             # These are generic multi-view controls, not energy-matched interventions.
             height, width = images.shape[-2:]
-            top, left = max(1, height // 20), max(1, width // 20)
+            if self.guidance_enabled:
+                top, left = max(1, round(height * .0625)), max(1, round(width * .0625))
+            else:
+                top, left = max(1, height // 20), max(1, width // 20)
             crop = F.interpolate(
                 images[:, :, top:height-top, left:width-left].float(),
                 size=(height, width), mode='bilinear', align_corners=False,
