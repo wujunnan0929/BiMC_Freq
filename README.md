@@ -386,13 +386,35 @@ python tools/run_safd_dual_experiments.py --suite core --seeds 1 2 3 --dry-run
 # Use --execute to run; add --opts DATASET.ROOT /path/to/datasets as needed.
 ```
 
+For CIFAR-100 and mini-ImageNet, generate their own offline LLM scale descriptions
+first. The generator reads the dataset's existing class list; it does not load or
+download images. Set `DEEPSEEK_API_KEY` in the environment before generation:
+
+```bash
+python tools/generate_frequency_descriptions_deepseek.py --dataset cifar100
+python tools/generate_frequency_descriptions_deepseek.py --dataset miniimagenet
+
+python tools/run_safd_dual_experiments.py --dataset cifar100 --output-root outputs/safd_dual_cifar100_v2 --suite core --seeds 1 2 3 --execute --opts DATASET.ROOT /path/to/datasets
+python tools/run_safd_dual_experiments.py --dataset miniimagenet --output-root outputs/safd_dual_miniimagenet_v2 --suite core --seeds 1 2 3 --execute --opts DATASET.ROOT /path/to/datasets
+```
+
+`EXPLICIT_DESCRIPTION_PATH: auto` chooses each dataset's file. An explicit
+`--opts TRAINER.BiMC.FREQUENCY.EXPLICIT_DESCRIPTION_PATH /path/to/file.json` takes
+precedence. The launcher validates every class/band before starting the matrix;
+missing or mismatched text fails immediately with a generation command. It does
+not substitute ordinary descriptions or templates for the LLM scale branch.
+Use `--validate-only` on the generator for offline validation. The old CUB-named
+generator commands remain compatible. Source changes require a new output root
+or an explicit `--rerun`; old completed runs retain their original fingerprints.
+
 Use `configs/trainers/bimc_safd_dual.yaml` for a single run. The core matrix
 includes the BiMC and original-GDA references, FFT/SAFD visual GDA, paired
 FFT/SAFD dual-modal methods, and exact zero controls. The extended matrix tests
 visual/text evidence, residualization, alignment, semantic scale permutation,
 ordinary descriptions and individual scales. See [design and analysis](docs/safd_dual_design.md)
 for equations, server commands, audits, existing results and limitations.
-The new method's full CUB accuracy has not been established.
+Accuracy gains must be assessed against the original-GDA anchor; successful text
+validation and execution do not establish a frequency-branch gain.
 
 ## Acknowledgment
 

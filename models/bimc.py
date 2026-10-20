@@ -21,6 +21,7 @@ from models.frequency_router import (
     residual_frequency_fusion,
     sample_pseudo_fscil_episode,
 )
+from utils.frequency_descriptions import load_explicit_descriptions
 
 def load_clip_to_cpu(cfg):
     backbone_name = cfg.MODEL.BACKBONE.NAME
@@ -216,78 +217,14 @@ class BiMC(nn.Module):
     def inference_explicit_frequency_description_candidates(
         self, class_names, description_path
     ):
-        """Encode explicit CUB-style descriptions as ``[C, B, K, D]``."""
-        try:
-            with open(description_path, "r", encoding="utf-8") as file:
-                prompt_dict = json.load(file)
-        except FileNotFoundError as error:
-            raise FileNotFoundError(
-                "Explicit frequency description file was not found: {}. "
-                "Run tools/generate_cub200_frequency_descriptions.py first."
-                .format(description_path)
-            ) from error
-        if not isinstance(prompt_dict, dict) or not prompt_dict:
-            raise ValueError(
-                "Explicit frequency descriptions must be a non-empty JSON object."
-            )
-
-        normalized_prompts = {}
-        for key, value in prompt_dict.items():
-            normalized_key = self._normalize_description_key(key)
-            if normalized_key in normalized_prompts:
-                raise ValueError(
-                    "Duplicate normalized class key in explicit descriptions: {}"
-                    .format(key)
-                )
-            normalized_prompts[normalized_key] = value
-
+        """Encode validated dataset-specific descriptions as ``[C, B, K, D]``."""
+        candidates = load_explicit_descriptions(description_path, class_names)
         band_names = ("low", "middle", "high")
         class_embeddings = []
-        expected_candidates = None
-        for classname in class_names:
-            normalized_key = self._normalize_description_key(classname)
-            if normalized_key not in normalized_prompts:
-                raise KeyError(
-                    "Missing explicit frequency descriptions for class: {}"
-                    .format(classname)
-                )
-            class_prompts = normalized_prompts[normalized_key]
-            if not isinstance(class_prompts, dict) or set(class_prompts) != set(
-                band_names
-            ):
-                raise ValueError(
-                    "Class {} must contain exactly low, middle, and high lists."
-                    .format(classname)
-                )
-
+        for class_prompts in candidates:
             band_embeddings = []
             for band_name in band_names:
                 descriptions = class_prompts[band_name]
-                if (
-                    not isinstance(descriptions, list)
-                    or not descriptions
-                    or not all(
-                        isinstance(description, str) and description.strip()
-                        for description in descriptions
-                    )
-                ):
-                    raise ValueError(
-                        "Descriptions for {}/{} must be a non-empty string list."
-                        .format(classname, band_name)
-                    )
-                if expected_candidates is None:
-                    expected_candidates = len(descriptions)
-                elif len(descriptions) != expected_candidates:
-                    raise ValueError(
-                        "All class/band entries must have the same number of "
-                        "candidates; {}/{} has {}, expected {}."
-                        .format(
-                            classname,
-                            band_name,
-                            len(descriptions),
-                            expected_candidates,
-                        )
-                    )
                 tokens = clip.tokenize(descriptions).to(self.device)
                 embeddings = self.clip_model.encode_text(tokens)
                 band_embeddings.append(F.normalize(embeddings, dim=-1))

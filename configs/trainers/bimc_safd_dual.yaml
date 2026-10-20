@@ -35,7 +35,8 @@ TRAINER:
       HIGH_ENHANCE: 0.25
       NOVEL_VISION_CALIBRATION: False
       USE_EXPLICIT_DESCRIPTIONS: True
-      EXPLICIT_DESCRIPTION_PATH: "description/cub200_frequency_descriptions_deepseek.json"
+      # Resolved from DATASET.NAME; explicit --opts paths still take precedence.
+      EXPLICIT_DESCRIPTION_PATH: "auto"
       DESCRIPTION_TOPK: 3
       DESCRIPTION_TEMPERATURE: 0.07
       ROUTER:

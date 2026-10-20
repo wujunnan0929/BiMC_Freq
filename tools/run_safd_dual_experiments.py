@@ -9,6 +9,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 from tools import run_frequency_uncertainty_experiments as shared
+from utils.frequency_descriptions import (
+    DATASET_SPECS, config_scalar, dataset_class_names, dataset_slug,
+    description_path, load_explicit_descriptions,
+)
 
 common = shared.common
 F, U, D = shared.F, shared.U, 'TRAINER.BiMC.DUAL_FREQUENCY.'
@@ -62,6 +66,26 @@ def build_plan(args):
     if collision:
         raise ValueError('Matrix-managed keys cannot be overridden: ' + ', '.join(sorted(collision)))
     return shared.build_plan(args, matrix=matrix, launcher_path=Path(__file__))
+
+
+def validate_plan_inputs(args, plan):
+    """Check full-dataset candidates before launching even the first baseline."""
+    supplied = dict(zip(args.opts[::2], args.opts[1::2]))
+    dataset = supplied.get('DATASET.NAME') or config_scalar(args.data_cfg, 'NAME')
+    dataset = dataset_slug(dataset)
+    train_path = config_scalar(args.train_cfg, 'EXPLICIT_DESCRIPTION_PATH', 'auto')
+    path = description_path(dataset, supplied.get(F+'EXPLICIT_DESCRIPTION_PATH', train_path))
+    required = []
+    for run in plan:
+        options = run['command'][run['command'].index('--opts') + 1:]
+        options = dict(zip(options[::2], options[1::2]))
+        if options.get(D+'ENABLED') == 'True' and options.get(D+'SEMANTIC_SOURCE') == 'explicit':
+            required.append(run['variant'])
+    if not required:
+        return None
+    candidates = load_explicit_descriptions(path, dataset_class_names(dataset), exact=True, dataset=dataset)
+    return {'dataset': dataset, 'path': str(path), 'classes': len(candidates),
+            'candidates_per_band': len(candidates[0]['low']), 'required_variants': sorted(set(required))}
 
 
 def _compare_predictions(reference, candidate, candidate_key='prediction'):
@@ -138,9 +162,11 @@ def save_summary(path, args, rows, planned_runs):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--data-cfg', default=str(REPO_ROOT / 'configs/datasets/cub200.yaml'))
+    parser.add_argument('--dataset', choices=tuple(DATASET_SPECS),
+                        help='Convenience selection of dataset YAML and output directory.')
+    parser.add_argument('--data-cfg')
     parser.add_argument('--train-cfg', default=str(REPO_ROOT / 'configs/trainers/bimc_safd_dual.yaml'))
-    parser.add_argument('--output-root', default=str(REPO_ROOT / 'outputs/safd_dual_cub'))
+    parser.add_argument('--output-root')
     parser.add_argument('--support-root')
     parser.add_argument('--python', default=sys.executable)
     parser.add_argument('--suite', choices=('core', 'all'), default='core')
@@ -153,7 +179,15 @@ def parse_args(argv=None):
     parser.add_argument('--rerun', action='store_true')
     parser.add_argument('--keep-going', action='store_true')
     parser.add_argument('--opts', nargs=argparse.REMAINDER, default=[])
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.data_cfg = args.data_cfg or str(REPO_ROOT / 'configs/datasets' / ((args.dataset or 'cub200') + '.yaml'))
+    supplied = dict(zip(args.opts[::2], args.opts[1::2]))
+    resolved = dataset_slug(supplied.get('DATASET.NAME') or config_scalar(args.data_cfg, 'NAME'))
+    if args.dataset and resolved != args.dataset:
+        parser.error('--dataset disagrees with DATASET.NAME in --data-cfg/--opts.')
+    suffix = 'cub' if resolved == 'cub200' else resolved
+    args.output_root = args.output_root or str(REPO_ROOT / 'outputs' / ('safd_dual_' + suffix))
+    return args
 
 
 def main(argv=None):
@@ -176,8 +210,22 @@ def main(argv=None):
     if not args.execute:
         for run in plan:
             print(f"{run['variant']} seed={run['seed']}: " + common.describe_command(run['command']))
+        try:
+            checked = validate_plan_inputs(args, plan)
+            if checked:
+                print('Frequency text preflight passed: ' + str(checked))
+        except (ValueError, OSError) as error:
+            print('Frequency text preflight failed: ' + str(error), file=sys.stderr)
+            return 2
         print(f'Dry run: {len(plan)} commands; no experiments started.')
         return 0
+    try:
+        checked = validate_plan_inputs(args, plan)
+        if checked:
+            print('Frequency text preflight passed: ' + str(checked), flush=True)
+    except (ValueError, OSError) as error:
+        print('Frequency text preflight failed: ' + str(error), file=sys.stderr)
+        return 2
     for run in plan:
         directory = Path(run['output_dir'])
         if directory.exists() and any(directory.iterdir()) and not (directory / 'run_spec.json').is_file():

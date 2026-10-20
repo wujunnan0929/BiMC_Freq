@@ -155,6 +155,60 @@ python main.py --data_cfg configs/datasets/cub200.yaml --train_cfg configs/train
 
 ## 输出及结果审查
 
+### CIFAR-100 / mini-ImageNet 双模态运行修复（2026-10-13）
+
+此前的两个汇总均在种子 1 的 `zero_dual` 退出，后续 FFT/SAFD 双模态及种子
+2、3 没有启动。已确认代码的跨数据集限制：训练配置默认指向 CUB 描述，
+生成器只接受 200 类且提示词只有鸟类。上传的汇总只记录退出码 1，没有
+原始 `run.log`，所以不能断言这就是服务器 traceback 的具体异常。
+
+现在配置使用 `EXPLICIT_DESCRIPTION_PATH: auto`，依据 `DATASET.NAME` 选择：
+
+| 数据集 | 默认频段文本 |
+|---|---|
+| CUB-200 | `description/cub200_frequency_descriptions_deepseek.json` |
+| CIFAR-100 | `description/cifar100_frequency_descriptions.json` |
+| mini-ImageNet | `description/miniimagenet_frequency_descriptions.json` |
+
+生成器支持 `--dataset`，从原有类别描述文件读取 100/200 个类别，并与数据集
+实际 `CLASSES` 的规范化名称核对。CIFAR 提示词明确限制在 32×32 可见信息；
+非 CUB 类别使用物体、动物、植物、场景可见属性，而不是统一使用鸟类羽毛。
+每类仍由 LLM 生成 low/middle/high 各 5 条候选，保留断点恢复与格式校验。
+代码不会自动将普通 BiMC 描述或通用模板当作三尺度 LLM 描述。
+
+在服务器项目根目录，先设置 `DEEPSEEK_API_KEY` 环境变量，再执行：
+
+```bash
+python tools/generate_frequency_descriptions_deepseek.py --dataset cifar100
+python tools/generate_frequency_descriptions_deepseek.py --dataset miniimagenet
+python tools/generate_frequency_descriptions_deepseek.py --dataset cifar100 --validate-only
+python tools/generate_frequency_descriptions_deepseek.py --dataset miniimagenet --validate-only
+
+python tools/run_safd_dual_experiments.py --dataset cifar100 --output-root outputs/safd_dual_cifar100_v2 --suite core --seeds 1 2 3 --execute --opts DATASET.ROOT /path/to/datasets
+python tools/run_safd_dual_experiments.py --dataset miniimagenet --output-root outputs/safd_dual_miniimagenet_v2 --suite core --seeds 1 2 3 --execute --opts DATASET.ROOT /path/to/datasets
+```
+
+两次矩阵分别为 24 次完整实验。新输出根目录避免修复前的代码指纹冲突。
+若希望复用原支持集抽样，增加 `--support-root outputs/safd_dual_cifar100/support`
+或 miniimagenet 的对应路径，并确保原数据配置及 `DATASET.*` 覆盖完全一致。
+复用支持清单不会复用旧模型或旧指标。
+
+预检查先核对整个数据集的类别、三个频段、非空描述、候选数一致性与重复
+规范化类名，`--dry-run` 也会检查。文本缺失时，在启动 baseline 或加载 CLIP
+前直接报错并给出生成命令。直接运行 `main.py` 也执行相同的输入检查。
+后续子进程失败时，`summary.json` 与 `run_state.json` 会附带 `log_path` 和
+最多 30 行／16 KiB 的 `error_tail`，保留具体 traceback。
+
+本地没有 LLM API 密钥，因此真实的两个新描述文件需在服务器生成。
+回归测试使用明确标注的临时解析夹具，不能作为 LLM 属性质量或准确率证据。
+
+修复验证：新增 13 项跨数据集回归测试，全套 219 项通过。真实 CLIP 文本
+编码器分别完成 CIFAR-100 与 mini-ImageNet 的 100 类 × 3 频段 × 5 候选，
+输出 `[100, 3, 5, 512]`，全部有限且归一化；CIFAR 的 12 类真实图像子集上，
+零修正与手动非零双模态各完成 3 会话。零修正的查询辅助编码数为 0，
+非零流程确实执行了频率编码。文本夹具由现有普通 LLM 描述重复构成，
+只用于加载／编码／执行测试，未作为正式描述安装，也不报告 benchmark 准确率。
+
 每次运行保存 `config.yaml`、`support.json`、`uncertainty_calibration.json`、
 `dual_frequency_calibration.json`、`metrics.json`、`checkpoint.pt` 和每会话预测。
 双模态校准记录包含候选 lambda 的分组纠正/破坏计数、约束是否可行、协议

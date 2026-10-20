@@ -283,6 +283,15 @@ def setup_cfg(dataset_cfg_file, method_cfg_file, opts=None):
     if opts:
         cfg.merge_from_list(opts)
 
+    frequency = cfg.TRAINER.BiMC.FREQUENCY
+    dual = cfg.TRAINER.BiMC.DUAL_FREQUENCY
+    needs_explicit = ((dual.ENABLED and dual.SEMANTIC_SOURCE == 'explicit')
+                      or (frequency.USE_EXPLICIT_DESCRIPTIONS and
+                          (frequency.ENABLED or cfg.TRAINER.BiMC.CONSENSUS.ENABLED)))
+    if frequency.EXPLICIT_DESCRIPTION_PATH == 'auto' or (needs_explicit and not frequency.EXPLICIT_DESCRIPTION_PATH):
+        from utils.frequency_descriptions import description_path
+        frequency.EXPLICIT_DESCRIPTION_PATH = str(description_path(cfg.DATASET.NAME))
+
     cfg.freeze()
     return cfg
 
@@ -306,6 +315,9 @@ def main():
     train_cfg = args.train_cfg
 
     cfg = setup_cfg(data_cfg, train_cfg, args.opts)
+
+    from utils.frequency_descriptions import validate_frequency_inputs
+    validate_frequency_inputs(cfg)
 
     # Set the random seed and GPU ID
     set_seed(cfg.SEED)

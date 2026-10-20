@@ -1,4 +1,4 @@
-"""Generate explicit low/middle/high semantic descriptions for CUB-200.
+"""Generate explicit low/middle/high descriptions for supported FSCIL datasets.
 
 The generator intentionally uses only Python's standard library.  It talks to
 an OpenAI-compatible ``/chat/completions`` endpoint, validates every batch, and
@@ -19,6 +19,10 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from utils.frequency_descriptions import DATASET_SPECS, dataset_class_names, dataset_slug
 
 BANDS: Tuple[str, ...] = ("low", "middle", "high")
 DEFAULT_SOURCE = Path("description/modified_cub200_output.json")
@@ -45,6 +49,13 @@ Rules:
 10. Preserve each supplied class name exactly as the JSON key and in sentences.
 """
 
+
+def system_prompt(dataset='cub200'):
+    if dataset_slug(dataset) == 'cub200':
+        return SYSTEM_PROMPT
+    return SYSTEM_PROMPT.replace('CLIP-based bird image recognition',
+                                 'CLIP-based object, animal, plant and scene recognition')
+
 NON_VISUAL_PATTERNS: Tuple[Tuple[str, str], ...] = (
     (r"\bhabitat\b|\blives? in\b|\bfound in\b", "habitat"),
     (r"\bfeeds? on\b|\beats?\b|\bdiet\b|\bprey\b", "diet"),
@@ -59,7 +70,7 @@ def normalize_name(name: str) -> str:
     return " ".join(name.lower().replace("_", " ").replace("-", " ").split())
 
 
-def load_class_names(source_path: Path) -> List[str]:
+def load_class_names(source_path: Path, dataset='cub200') -> List[str]:
     with source_path.open("r", encoding="utf-8") as handle:
         source = json.load(handle)
     if not isinstance(source, dict) or not source:
@@ -68,19 +79,25 @@ def load_class_names(source_path: Path) -> List[str]:
     normalized = [normalize_name(name) for name in class_names]
     if len(set(normalized)) != len(normalized):
         raise ValueError("Class names become ambiguous after normalization.")
-    if len(class_names) != 200:
+    slug = dataset_slug(dataset)
+    expected = DATASET_SPECS[slug]['count']
+    if len(class_names) != expected:
         raise ValueError(
-            f"Expected 200 CUB-200 classes in {source_path}, found {len(class_names)}."
+            f"Expected {expected} {DATASET_SPECS[slug]['label']} classes in {source_path}, found {len(class_names)}."
         )
+    required = {normalize_name(name) for name in dataset_class_names(slug)}
+    if set(normalized) != required:
+        raise ValueError(f'Class names in {source_path} do not match the {slug} dataset; choose the correct --source.')
     return class_names
 
 
-def build_user_prompt(class_names: Sequence[str], candidates: int, max_words: int) -> str:
+def build_user_prompt(class_names: Sequence[str], candidates: int, max_words: int, dataset='cub200') -> str:
+    slug = dataset_slug(dataset)
     schema = {
         name: {band: ["..."] * candidates for band in BANDS}
         for name in class_names
     }
-    return f"""Dataset: CUB-200-2011
+    prompt = f"""Dataset: {DATASET_SPECS[slug]['label']}
 
 Class names:
 {json.dumps(list(class_names), ensure_ascii=False)}
@@ -105,6 +122,18 @@ JSON object with no Markdown and exactly this shape:
 
 {json.dumps(schema, ensure_ascii=False, indent=2)}
 """
+    if slug != 'cub200':
+        prompt = prompt.replace('named body parts, their\narrangement and proportions, and medium-scale shapes or markings.',
+                                'visible components or body parts, their\narrangement and proportions, and medium-scale shapes or markings.')
+        prompt = prompt.replace('feather texture, thin boundaries, small markings,\nspots, streaks, bars, and local color transitions.',
+                                'visible material, fur or surface texture, clear local boundaries,\nsmall markings, spots, stripes, and local color transitions.')
+        prompt += ('\nUse class-appropriate cues: do not describe wings or feathers for objects, '
+                   'people, plants, or scenes. Do not assume every class is an animal.\n')
+    if slug == 'cifar100':
+        prompt += ('\nCIFAR-100 photographs have only 32 x 32 pixels. Use conservative cues '
+                   'plausibly visible at this resolution; avoid microscopic texture, '
+                   'tiny anatomical details, readable lettering, or invented small markings.\n')
+    return prompt
 
 
 def strip_markdown_fence(content: str) -> str:
@@ -294,11 +323,12 @@ def call_chat_completions(
     reasoning_effort: str,
     timeout: float,
     json_mode: bool,
+    system_message: Optional[str] = None,
 ) -> str:
     body = {
         "model": model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_message or SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
     }
@@ -388,10 +418,11 @@ def validate_existing_results(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate validated CUB-200 low/middle/high CLIP descriptions."
+        description="Generate validated dataset-specific low/middle/high CLIP descriptions."
     )
-    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument('--dataset', choices=tuple(DATASET_SPECS), default='cub200')
+    parser.add_argument("--source", type=Path, default=None)
+    parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--api-base", default=os.environ.get("LLM_API_BASE", ""))
     parser.add_argument("--model", default=os.environ.get("LLM_MODEL", ""))
     parser.add_argument("--api-key-env", default="LLM_API_KEY")
@@ -418,6 +449,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    spec = DATASET_SPECS[args.dataset]
+    args.source = args.source or REPO_ROOT / spec['source']
+    # Preserve the generic legacy CUB output; the DeepSeek entry point supplies
+    # its provider-specific output, also resolved per dataset.
+    args.output = args.output or (REPO_ROOT / DEFAULT_OUTPUT if args.dataset == 'cub200'
+                                 else REPO_ROOT / spec['output'])
     if args.batch_size <= 0 or args.candidates <= 0 or args.max_words <= 0:
         raise ValueError("batch-size, candidates, and max-words must be positive.")
     if args.max_retries <= 0 or args.timeout <= 0.0 or args.max_output_tokens <= 0:
@@ -425,7 +462,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not 0.0 <= args.temperature <= 2.0:
         raise ValueError("temperature must lie in [0, 2].")
 
-    class_names = load_class_names(args.source)
+    class_names = load_class_names(args.source, args.dataset)
     if args.limit is not None:
         if args.limit <= 0:
             raise ValueError("limit must be positive when supplied.")
@@ -433,8 +470,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if args.dry_run:
         preview_names = class_names[: args.batch_size]
-        print(SYSTEM_PROMPT)
-        print(build_user_prompt(preview_names, args.candidates, args.max_words))
+        print(system_prompt(args.dataset))
+        print(build_user_prompt(preview_names, args.candidates, args.max_words, args.dataset))
         return 0
 
     if args.overwrite and args.output.exists() and not args.validate_only:
@@ -451,7 +488,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 f"Validated {len(results)} classes, but {len(missing)} are missing; "
                 f"first missing class: {missing[0]}"
             )
-        print(f"Validated {len(results)} CUB-200 classes in {args.output}.")
+        print(f"Validated {len(results)} {spec['label']} classes in {args.output}.")
         return 0
 
     pending = [name for name in class_names if name not in results]
@@ -471,7 +508,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         last_error: Optional[Exception] = None
         for attempt in range(1, args.max_retries + 1):
             base_prompt = build_user_prompt(
-                remaining_batch, args.candidates, args.max_words
+                remaining_batch, args.candidates, args.max_words, args.dataset
             )
             retry_note = ""
             if last_error is not None:
@@ -490,6 +527,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     reasoning_effort=args.reasoning_effort,
                     timeout=args.timeout,
                     json_mode=not args.disable_json_mode,
+                    system_message=system_prompt(args.dataset),
                 )
                 response = parse_response_content(content)
                 canonical, errors = canonicalize_and_validate_batch(
@@ -538,7 +576,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 f"Completed classes remain checkpointed in {args.output}."
             ) from last_error
 
-    print(f"Completed {len(results)} CUB-200 classes in {args.output}.")
+    print(f"Completed {len(results)} {spec['label']} classes in {args.output}.")
     return 0
 
 

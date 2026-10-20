@@ -253,6 +253,19 @@ def describe_command(command):
     return subprocess.list2cmdline(command) if os.name == "nt" else shlex.join(command)
 
 
+def failure_log_tail(path, max_bytes=16384, max_lines=30):
+    """Retain a bounded traceback so uploaded summaries explain failed runs."""
+    try:
+        with Path(path).open('rb') as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            handle.seek(max(0, size - max_bytes))
+            content = handle.read(max_bytes).decode('utf-8', errors='replace')
+        return '\n'.join(content.splitlines()[-max_lines:])
+    except OSError:
+        return ''
+
+
 def metric_statistics(values):
     numbers = [value for value in values if value is not None]
     return {
@@ -358,9 +371,13 @@ def execute_plan(plan, args, summary_writer=None):
             row.update(status="completed", summary=metrics["summary"])
             state["status"] = "completed"
         else:
-            row.update(status="failed", error=error)
-            state.update(status="failed", error=error)
+            log_path = str(output_dir / 'run.log')
+            tail = failure_log_tail(log_path)
+            row.update(status="failed", error=error, log_path=log_path, error_tail=tail)
+            state.update(status="failed", error=error, log_path=log_path, error_tail=tail)
             print(error, file=sys.stderr, flush=True)
+            if tail:
+                print(tail, file=sys.stderr, flush=True)
             failed = True
         write_json(output_dir / "run_state.json", state)
         rows.append(row)

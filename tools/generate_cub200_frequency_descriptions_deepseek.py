@@ -53,13 +53,14 @@ def build_deepseek_request_body(
     max_output_tokens: int,
     reasoning_effort: str,
     json_mode: bool,
+    system_message: Optional[str] = None,
 ) -> Dict[str, object]:
     """Build a DeepSeek V4 OpenAI-format Chat Completions request."""
     normalized_effort = normalize_deepseek_effort(reasoning_effort)
     body: Dict[str, object] = {
         "model": model,
         "messages": [
-            {"role": "system", "content": common.SYSTEM_PROMPT},
+            {"role": "system", "content": system_message or common.SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
         "max_tokens": max_output_tokens,
@@ -86,6 +87,7 @@ def call_deepseek_chat_completions(
     reasoning_effort: str,
     timeout: float,
     json_mode: bool,
+    system_message: Optional[str] = None,
 ) -> str:
     body = build_deepseek_request_body(
         model=model,
@@ -94,6 +96,7 @@ def call_deepseek_chat_completions(
         max_output_tokens=max_output_tokens,
         reasoning_effort=reasoning_effort,
         json_mode=json_mode,
+        system_message=system_message,
     )
     request = Request(
         common.endpoint_url(api_base),
@@ -137,6 +140,14 @@ def option_present(arguments: Sequence[str], option: str) -> bool:
 def apply_deepseek_defaults(arguments: Sequence[str]) -> List[str]:
     """Add provider defaults while preserving explicit command-line values."""
     result = list(arguments)
+    dataset = 'cub200'
+    for index, argument in enumerate(result):
+        if argument == '--dataset' and index + 1 < len(result):
+            dataset = result[index + 1]
+        elif argument.startswith('--dataset='):
+            dataset = argument.split('=', 1)[1]
+    # Keep explicit CLI/environment paths, otherwise select the dataset's file.
+    spec = common.DATASET_SPECS.get(dataset, common.DATASET_SPECS['cub200'])
     defaults = (
         ("--api-base", os.environ.get("DEEPSEEK_API_BASE", DEFAULT_DEEPSEEK_API_BASE)),
         ("--model", os.environ.get("DEEPSEEK_MODEL", DEFAULT_DEEPSEEK_MODEL)),
@@ -154,7 +165,7 @@ def apply_deepseek_defaults(arguments: Sequence[str]) -> List[str]:
         ),
         ("--max-retries", os.environ.get("DEEPSEEK_MAX_RETRIES", "8")),
         ("--timeout", os.environ.get("DEEPSEEK_TIMEOUT", "300")),
-        ("--output", os.environ.get("DEEPSEEK_OUTPUT", DEFAULT_DEEPSEEK_OUTPUT)),
+        ("--output", os.environ.get("DEEPSEEK_OUTPUT", str(common.REPO_ROOT / spec['output']))),
     )
     injected: List[str] = []
     for option, value in defaults:
