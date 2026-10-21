@@ -66,6 +66,21 @@ class Runner:
         self.uncertainty_report = None
         self.dual_frequency_report = None
         self.guidance_report = None
+        self.safd_metric_state = None
+        metric = cfg.TRAINER.BiMC.SAFD_METRIC
+        if metric.ENABLED:
+            b = cfg.TRAINER.BiMC
+            if (b.FREQUENCY.ENABLED or b.FREQUENCY.ROUTER.ENABLED or b.RESIDUAL.ENABLED
+                    or b.CONSENSUS.ENABLED or b.UNCERTAINTY.ENABLED
+                    or b.DUAL_FREQUENCY.ENABLED or b.GUIDANCE.ENABLED):
+                raise ValueError('SAFD_METRIC requires other optional adaptation branches disabled.')
+            if not metric.MODEL_PATH:
+                raise ValueError('SAFD_METRIC.MODEL_PATH must identify a base-fitted model.npz.')
+            from engine.safd_metric_runtime import load_frozen_metric, verify_reference_content
+            self.safd_metric_state = load_frozen_metric(
+                metric.MODEL_PATH, cfg, getattr(self.model.clip_model, 'clip_weight_sha256', None),
+                gain_override=metric.GAIN)
+            verify_reference_content(self.safd_metric_state, cfg, self.data_manager)
         if str(self.device).startswith('cuda'):
             torch.cuda.reset_peak_memory_stats()
         self.output_dir = Path(cfg.OUTPUT_DIR) if cfg.OUTPUT_DIR else None
@@ -166,6 +181,9 @@ class Runner:
         }
         if self.model.uncertainty_enabled:
             payload['memory_protocol'] = 'class_means_diagonal_variances_counts_no_individual_feature_replay'
+        if self.safd_metric_state is not None:
+            from engine.safd_metric_runtime import metric_report
+            payload['safd_metric'] = metric_report(self.safd_metric_state)
         temporary = self.output_dir / 'metrics.json.tmp'
         temporary.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False),
@@ -200,6 +218,7 @@ class Runner:
             'dual_frequency_calibration': self.dual_frequency_report,
             'guidance_state': _cpu_state(self.model.guidance_state),
             'guidance_calibration': self.guidance_report,
+            'safd_metric_state': _cpu_state(self.safd_metric_state),
             'metrics': self.sessions,
         }
         # Boundary snapshot. Pretrained CLIP is identified, not duplicated.
@@ -237,6 +256,10 @@ class Runner:
                 torch.cuda.synchronize()
             support_build_seconds = time.perf_counter() - start
             current['data_source'], current['task_id'] = 'base_training_only' if task_id == 0 else 'incremental_training_only', task_id
+            if task_id == 0 and self.safd_metric_state is not None:
+                from engine.safd_metric_runtime import verify_base_bank
+                verify_base_bank(self.safd_metric_state, self.model._last_support_ids,
+                                 current['raw_image_mean'].shape[-1])
             if task_id == 0 and self.model.guidance_enabled:
                 from engine.guidance_calibration import initialize_guidance
                 self.guidance_report = initialize_guidance(self.model, self.cfg, current)
@@ -352,6 +375,11 @@ class Runner:
                 + self.model.residual_head.codes.numel()
                 if self.model.residual_head else 0
             )
+            if self.safd_metric_state is not None:
+                fitted_count = self.safd_metric_state['metadata']['trainable_parameters']
+                metrics['head_parameter_count'] = fitted_count
+                metrics['base_fit_parameter_count'] = fitted_count
+                metrics['incremental_trainable_parameter_count'] = 0
             router_state = (self.model.frequency_router.state_dict()
                             if self.model.frequency_router is not None else {})
             metrics['retained_tensor_bytes'] = _tensor_bytes([
@@ -361,6 +389,7 @@ class Runner:
                 self.model.uncertainty_state,
                 self.model.dual_frequency_state,
                 self.model.guidance_state,
+                self.safd_metric_state,
             ])
             self.sessions.append(metrics)
             self.acc_list.append(round(metrics['accuracy'], 3))
@@ -390,6 +419,10 @@ class Runner:
         exact_anchor = True
         dual_alignment = (self.model.prepare_dual_alignment(state_dict)
                           if self.model.dual_frequency_enabled else None)
+        metric_classifier = None
+        if self.safd_metric_state is not None:
+            from engine.safd_metric_runtime import prepare_session_metric
+            metric_classifier = prepare_session_metric(self.safd_metric_state, state_dict['raw_image_mean'])
         encoding_start = dict(self.model.image_encoding_counts)
         exact_reference = True
         for batch in tqdm(loader):
@@ -427,6 +460,9 @@ class Runner:
                     eligible_rows.append(detail['eligible'].cpu())
                     encoded_rows.append(detail['encoded'].cpu())
                     evidence_rows.append(detail['evidence'].cpu())
+            elif self.safd_metric_state is not None:
+                from engine.safd_metric_runtime import apply_session_metric
+                output = apply_session_metric(self.safd_metric_state, metric_classifier, features, reference)
             else:
                 output = self.model.apply_incremental_residual(features, reference)
             if str(self.device).startswith('cuda'):

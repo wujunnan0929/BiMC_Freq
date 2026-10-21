@@ -208,6 +208,13 @@ def extend_cfg(cfg):
     guidance.BASE_ONLY = False
     guidance.SAVE_PREDICTIONS = True
 
+    # The SAFD metric is fitted on original base training images offline, then
+    # loaded once and frozen for every real incremental session.
+    cfg.TRAINER.BiMC.SAFD_METRIC = CN()
+    cfg.TRAINER.BiMC.SAFD_METRIC.ENABLED = False
+    cfg.TRAINER.BiMC.SAFD_METRIC.MODEL_PATH = ''
+    cfg.TRAINER.BiMC.SAFD_METRIC.GAIN = -1.0
+
     # Frequency-aware prototype calibration.  The legacy path is training-free;
     # an optional base-session residual router can be enabled below.  Frequency
     # mode defaults to off so existing BiMC configs reproduce the original method.

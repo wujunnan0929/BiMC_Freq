@@ -12,5 +12,7 @@ docs/*
 !docs/safd_dual_design.md
 !docs/frequency_guidance_experiment_protocol.md
 !docs/frequency_guidance_ubuntu.md
+!docs/frequency_guidance_next_steps.md
+!docs/safd_metric_design.md
 shared_dictionary_group_report*
 tools/*.local.ps1
