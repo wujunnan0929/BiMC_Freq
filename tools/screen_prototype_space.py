@@ -45,7 +45,7 @@ def main(argv=None):
     from tools.cache_safd_base_features import load_cache
     from engine.prototype_evaluation import (prepare_context, validation_records, evaluate_records,
         score_record, select_calibration, identity_calibration, expert_oracle_scores,
-        description_count_scores)
+        description_count_scores, prototype_factorial_diagnostics, expert_profile_diagnostics)
     torch.set_num_threads(args.threads)
     started = time.perf_counter()
     arrays, meta = load_cache(args.cache)
@@ -73,21 +73,35 @@ def main(argv=None):
         teacher = evaluate_records(records, lambda r: score_record(
             r, cfg, image_prototypes=r['teacher_prototypes'], calibration=calibration))
         expert = evaluate_records(records, lambda r: expert_oracle_scores(r, cfg))
+        prototype_controls = prototype_factorial_diagnostics(records, cfg, calibration)
+        expert_profiles = expert_profile_diagnostics(records, cfg, calibration)
+        write_json(out / 'prototype_controls.json', prototype_controls)
+        write_json(out / 'expert_profiles.json', expert_profiles)
+        print('Prototype controls:', {name: row['metrics'] for name, row in
+                                     prototype_controls['variants'].items()}, flush=True)
+        print('Individual experts:', {name: row['metrics'] for name, row in
+                                     expert_profiles['experts'].items()}, flush=True)
         counts = [int((arrays['description_targets'] == c).sum()) for c in meta['base_class_ids']]
         equal_count = evaluate_records(records, lambda r: description_count_scores(r, cfg, min(counts)))
         equal_count_calibrated = evaluate_records(records, lambda r: description_count_scores(
             r, cfg, min(counts), calibration))
-        result = {'status': 'completed', 'dataset': meta['dataset'],
+        result = {'status': 'completed', 'report_version': 2, 'dataset': meta['dataset'],
+            'screening_seed': args.seed,
             'scope': 'base_training_class_disjoint_screening_only', 'benchmark_test_evaluation': False,
             'new_CLIP_or_SAFD_encodings': 0, 'baseline': baseline,
             'calibrated_reference': calibration_report['selected_validation'],
             'selected_calibration': calibration, 'calibration_candidate_count': calibration_report['candidate_count'],
             'group_bias_only': group_report['selected_validation'],
             'teacher_prototype_diagnostic': {'metrics': teacher, 'uses_extra_labeled_teacher_images': True,
-                'deployable': False, 'selection_candidate': False, 'strict_mathematical_upper_bound': False},
+                'deployable': False, 'selection_candidate': False, 'strict_mathematical_upper_bound': False,
+                'teacher_variant': 'teacher_raw', 'visual_guidance_applied_to_teacher': False,
+                'reference_visual_guidance_enabled': bool(cfg.TRAINER.BiMC.VISION_CALIBRATION),
+                'comparison_changes_bank_and_guidance': bool(cfg.TRAINER.BiMC.VISION_CALIBRATION)},
             'expert_union_diagnostic': {'metrics': expert, 'uses_query_labels_to_choose_expert': True,
                 'experts': ['original_BiMC', 'fused_prototype', 'covariance', 'description_max'],
                 'deployable': False, 'selection_candidate': False},
+            'prototype_factorial_diagnostics': prototype_controls,
+            'expert_profile_diagnostics': expert_profiles,
             'description_counts': {'min': min(counts), 'max': max(counts)},
             'equal_description_count_control': {'per_class_count': min(counts),
                 'uncalibrated_metrics': equal_count, 'calibrated_metrics': equal_count_calibrated,

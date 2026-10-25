@@ -206,7 +206,12 @@ def description_count_scores(row, cfg, per_class_count, calibration=None):
 
 
 @torch.no_grad()
-def evaluate_records(records, score_fn):
+def evaluate_records(records, score_fn, reference_score_fn=None):
+    """Mean stage accuracies and paired counts against an explicit anchor.
+
+    The default anchor is the original BiMC, preserving existing reports.
+    Counts are repeated stage-query observations, not distinct images.
+    """
     rows, corrected, damaged, changed = [], 0, 0, 0
     for row in records:
         scores = score_fn(row)
@@ -215,13 +220,15 @@ def evaluate_records(records, score_fn):
         if not old.any() or not (~old).any():
             raise ValueError('A validation stage must contain both pseudo-old and pseudo-novel queries.')
         correct = scores.argmax(-1) == target
-        ref_correct = row['reference_votes'].argmax(-1) == target
+        reference = row['reference_votes'] if reference_score_fn is None else reference_score_fn(row)
+        ref_prediction = reference.argmax(-1)
+        ref_correct = ref_prediction == target
         base = 100 * correct[old].float().mean().item()
         novel = 100 * correct[~old].float().mean().item()
         rows.append((base, novel, 2 * base * novel / (base + novel) if base + novel else 0.))
         corrected += int((correct & ~ref_correct).sum())
         damaged += int((~correct & ref_correct).sum())
-        changed += int((scores.argmax(-1) != row['reference_votes'].argmax(-1)).sum())
+        changed += int((scores.argmax(-1) != ref_prediction).sum())
     if not rows:
         raise ValueError('No validation stages.')
     means = np.asarray(rows).mean(0)
@@ -278,3 +285,139 @@ def expert_oracle_scores(row, cfg):
     scores = row['reference_votes'].clone()
     scores[hit] = F.one_hot(row['targets'][hit], scores.shape[1]).to(scores.dtype)
     return scores
+
+
+def prototype_control_scores(row, cfg, variant, calibration=None):
+    """Cross support/teacher banks with the same visual guidance operation.
+
+    Covariance, semantic features, old prototypes and score calibration stay
+    fixed. Teacher variants use extra labels and are never fitted candidates.
+    """
+    if variant == 'support_guided':
+        return score_record(row, cfg, calibration=calibration)
+    if variant == 'support_raw':
+        proto = row['raw_prototypes']
+    elif variant == 'teacher_raw':
+        proto = row['teacher_prototypes']
+    elif variant == 'teacher_guided':
+        proto = row['teacher_prototypes']
+        if cfg.TRAINER.BiMC.VISION_CALIBRATION:
+            old = row['num_old']
+            proto = proto.clone()
+            proto[old:] = _reference_proxy(cfg).soft_calibration(_prototypes(row)[:old], proto[old:])
+    else:
+        raise ValueError(f'Unknown prototype control: {variant}')
+    return score_record(row, cfg, image_prototypes=proto, calibration=calibration)
+
+
+def _accuracy_deltas(metrics, reference):
+    return {key + '_delta_pp': metrics[key] - reference[key]
+            for key in ('base_accuracy', 'novel_accuracy', 'harmonic_accuracy')}
+
+
+@torch.no_grad()
+def prototype_factorial_diagnostics(records, cfg, calibration=None):
+    """A diagnostic 2x2 comparison; no teacher result selects a model."""
+    calibration = validate_calibration(calibration)
+    def scores(row, variant):
+        return prototype_control_scores(row, cfg, variant, calibration)
+    anchor = lambda row: scores(row, 'support_guided')
+    reference = evaluate_records(records, anchor, reference_score_fn=anchor)
+    variants = {}
+    for name in ('support_guided', 'support_raw', 'teacher_guided', 'teacher_raw'):
+        metrics = evaluate_records(records, lambda row: scores(row, name), reference_score_fn=anchor)
+        teacher = name.startswith('teacher_')
+        variants[name] = {'metrics': metrics, 'delta_vs_support_guided': _accuracy_deltas(metrics, reference),
+                          'uses_extra_labeled_teacher_images': teacher,
+                          'deployable': not teacher, 'selection_candidate': False}
+    contrasts = {}
+    comparisons = (
+        ('disable_guidance_support', 'support_raw', 'support_guided'),
+        ('disable_guidance_teacher', 'teacher_raw', 'teacher_guided'),
+        ('teacher_vs_support_guided', 'teacher_guided', 'support_guided'),
+        ('teacher_vs_support_raw', 'teacher_raw', 'support_raw'),
+    )
+    for name, candidate, control in comparisons:
+        metrics = evaluate_records(records, lambda row: scores(row, candidate),
+                                   reference_score_fn=lambda row: scores(row, control))
+        contrasts[name] = {'candidate': candidate, 'control': control,
+                          'delta_pp': _accuracy_deltas(metrics, variants[control]['metrics']),
+                          'corrected_observations': metrics['corrected_observations'],
+                          'damaged_observations': metrics['damaged_observations'],
+                          'changed_observations': metrics['changed_observations']}
+    support_counts = sorted({len(indices) for row in records
+                             for indices in row['support_indices'][row['num_old']:]})
+    teacher_counts = sorted({len(indices) for row in records for indices in row['teacher_indices']})
+    return {'anchor': 'support_guided_with_selected_score_calibration',
+            'fixed_score_calibration': calibration, 'vision_calibration_enabled': bool(cfg.TRAINER.BiMC.VISION_CALIBRATION),
+            'support_counts': support_counts, 'teacher_counts': teacher_counts,
+            'old_prototypes_covariance_and_text_fixed': True,
+            'teacher_and_support_banks_disjoint': True, 'variants': variants, 'contrasts': contrasts,
+            'selection_candidate': False,
+            'limitations': ['Teacher banks contain extra labeled images and are not nested support sets.',
+                'Teacher/support contrasts compare independent banks; they are not strict accuracy upper bounds.',
+                'Disabling novel guidance also changes old-class accuracy through class competition.']}
+
+
+def _expert_scores(row, cfg, calibration):
+    logits = branch_logits(row, cfg)
+    return {'original_BiMC': row['reference_votes'],
+            'calibrated_BiMC': score_record(row, cfg, calibration=calibration),
+            'fused_prototype': logits['fused'], 'covariance': logits['cov'],
+            'description_max': logits['description']}
+
+
+@torch.no_grad()
+def expert_profile_diagnostics(records, cfg, calibration=None):
+    """Profile fixed predictors before interpreting a label-using union.
+
+    Every single expert predicts across all seen classes. Pairwise counts use
+    labels only for evaluation; they do not define an inference-time router.
+    """
+    calibration = validate_calibration(calibration)
+    names = ('original_BiMC', 'calibrated_BiMC', 'fused_prototype', 'covariance', 'description_max')
+    anchor = lambda row: score_record(row, cfg, calibration=calibration)
+    reference = evaluate_records(records, anchor, reference_score_fn=anchor)
+    profiles = {}
+    for name in names:
+        metrics = evaluate_records(records, lambda row: _expert_scores(row, cfg, calibration)[name],
+                                   reference_score_fn=anchor)
+        profiles[name] = {'metrics': metrics, 'delta_vs_calibrated': _accuracy_deltas(metrics, reference)}
+    pairs = []
+    for left, right in itertools.combinations(names, 2):
+        groups = {name: dict.fromkeys(('observations', 'both_correct', 'left_only_correct',
+                    'right_only_correct', 'both_wrong'), 0) for name in ('all', 'old', 'novel')}
+        for row in records:
+            scores = _expert_scores(row, cfg, calibration)
+            target = row['targets']
+            lc, rc = (scores[name].argmax(-1) == target for name in (left, right))
+            old = target < row['num_old']
+            for group, mask in (('all', torch.ones_like(old)), ('old', old), ('novel', ~old)):
+                counts = groups[group]
+                counts['observations'] += int(mask.sum())
+                counts['both_correct'] += int((lc & rc & mask).sum())
+                counts['left_only_correct'] += int((lc & ~rc & mask).sum())
+                counts['right_only_correct'] += int((~lc & rc & mask).sum())
+                counts['both_wrong'] += int((~lc & ~rc & mask).sum())
+        pairs.append({'left': left, 'right': right, 'groups': groups})
+    def union_scores(row):
+        experts = _expert_scores(row, cfg, calibration)
+        hit = torch.stack([scores.argmax(-1) == row['targets'] for scores in experts.values()]).any(0)
+        result = row['reference_votes'].clone()
+        result[hit] = F.one_hot(row['targets'][hit], result.shape[1]).to(result.dtype)
+        return result
+    union = evaluate_records(records, union_scores, reference_score_fn=anchor)
+    best = max(names, key=lambda name: profiles[name]['metrics']['harmonic_accuracy'])
+    return {'anchor': 'calibrated_BiMC', 'fixed_score_calibration': calibration,
+            'prediction_scope': 'each_expert_predicts_over_all_seen_classes', 'experts': profiles,
+            'pairwise_correctness': pairs, 'count_unit': 'repeated_stage_query_observations',
+            'best_fixed_expert_by_development_H': {'name': best, 'metrics': profiles[best]['metrics'],
+                'selection_source': 'same_development_bank; not_an_independent_performance_estimate'},
+            'label_oracle_union': {'metrics': union, 'experts': list(names),
+                'H_gap_vs_best_fixed_expert_pp': union['harmonic_accuracy'] - profiles[best]['metrics']['harmonic_accuracy'],
+                'uses_query_labels_to_choose_expert': True, 'deployable': False,
+                'strict_mathematical_upper_bound_for_other_methods': False},
+            'selection_candidate': False,
+            'limitations': ['An oracle union gap does not imply a realizable gain for a learned router.',
+                'A single covariance/description expert uses all classes, unlike the group-specific BiMC mixture.',
+                'Stage-query observations overlap across stages and sequences.']}

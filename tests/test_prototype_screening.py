@@ -3,6 +3,7 @@ import contextlib
 import io
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 import torch
 from torch.nn import functional as F
@@ -102,6 +103,85 @@ class PrototypeScreeningTest(unittest.TestCase):
         self.assertGreaterEqual(oracle['novel_accuracy'], baseline['novel_accuracy'])
         evaluation.evaluate_records(records, lambda r: evaluation.score_record(r, cfg, r['teacher_prototypes']))
         self.assertTrue(all(torch.equal(r['reference_votes'], s) for r, s in zip(records, snapshots)))
+
+    def test_factorial_controls_apply_same_guidance_and_preserve_old_prototypes(self):
+        _, cfg, _, _, records = self.records()
+        row = records[0]
+        snapshots = {key: row[key].clone() for key in ('raw_prototypes', 'reference_prototypes',
+                                                      'teacher_prototypes', 'reference_votes')}
+        calibration = {**evaluation.identity_calibration(), 'fused_temperature': .1}
+        expected = row['teacher_prototypes'].clone()
+        old = row['num_old']
+        expected[old:] = _reference_proxy(cfg).soft_calibration(
+            row['reference_prototypes'][:old], expected[old:])
+        torch.testing.assert_close(evaluation.prototype_control_scores(row, cfg, 'teacher_guided', calibration),
+                                   evaluation.score_record(row, cfg, expected, calibration))
+        torch.testing.assert_close(expected[:old], row['reference_prototypes'][:old], rtol=0, atol=0)
+        self.assertIs(evaluation.prototype_control_scores(row, cfg, 'support_guided'), row['reference_votes'])
+        report = evaluation.prototype_factorial_diagnostics(records, cfg, calibration)
+        self.assertEqual(report['fixed_score_calibration'], calibration)
+        self.assertEqual(report['support_counts'], [2])
+        self.assertEqual(report['teacher_counts'], [4])
+        self.assertEqual(report['variants']['support_guided']['metrics']['changed_observations'], 0)
+        self.assertFalse(report['variants']['teacher_guided']['deployable'])
+        self.assertFalse(any(v['selection_candidate'] for v in report['variants'].values()))
+        self.assertEqual(set(report['contrasts']), {'disable_guidance_support', 'disable_guidance_teacher',
+                                                  'teacher_vs_support_guided', 'teacher_vs_support_raw'})
+        self.assertTrue(all(torch.equal(row[key], value) for key, value in snapshots.items()))
+        with self.assertRaisesRegex(ValueError, 'Unknown prototype control'):
+            evaluation.prototype_control_scores(row, cfg, 'unknown')
+
+    def test_factorial_guided_and_raw_agree_when_visual_guidance_is_disabled(self):
+        arrays, cfg, protocol, _, _ = self.records()
+        cfg = cfg.clone()
+        cfg.defrost()
+        cfg.TRAINER.BiMC.VISION_CALIBRATION = False
+        cfg.freeze()
+        row = evaluation.validation_records(arrays, cfg, protocol)[0]
+        for source in ('support', 'teacher'):
+            torch.testing.assert_close(evaluation.prototype_control_scores(row, cfg, source + '_guided'),
+                                       evaluation.prototype_control_scores(row, cfg, source + '_raw'),
+                                       rtol=0, atol=0)
+
+    def test_expert_profiles_separate_single_predictors_from_query_label_union(self):
+        _, cfg, _, _, _ = self.records()
+        target = torch.arange(4)
+        def scores(correct_indices):
+            prediction = (target + 1) % 4
+            prediction[correct_indices] = target[correct_indices]
+            return F.one_hot(prediction, 4).float()
+        original, calibrated = scores([0, 3]), scores([0, 1, 3])
+        row = {'targets': target, 'num_old': 2, 'reference_votes': original}
+        logits = {'fused': scores([0, 2]), 'cov': scores([1, 2]), 'description': scores([1, 3])}
+        with patch.object(evaluation, 'branch_logits', return_value=logits), \
+             patch.object(evaluation, 'score_record', return_value=calibrated):
+            report = evaluation.expert_profile_diagnostics([row], cfg)
+        self.assertEqual(report['experts']['original_BiMC']['metrics']['damaged_observations'], 1)
+        self.assertEqual(report['experts']['calibrated_BiMC']['metrics']['changed_observations'], 0)
+        self.assertEqual(report['best_fixed_expert_by_development_H']['name'], 'calibrated_BiMC')
+        union = report['label_oracle_union']
+        self.assertEqual(union['metrics']['harmonic_accuracy'], 100.)
+        self.assertEqual(union['metrics']['corrected_observations'], 1)
+        self.assertAlmostEqual(union['H_gap_vs_best_fixed_expert_pp'], 100. - 200. / 3.)
+        pair = next(p for p in report['pairwise_correctness']
+                    if p['left'] == 'original_BiMC' and p['right'] == 'fused_prototype')
+        self.assertEqual(pair['groups']['all'], {'observations': 4, 'both_correct': 1,
+                         'left_only_correct': 1, 'right_only_correct': 1, 'both_wrong': 1})
+        self.assertEqual(pair['groups']['novel']['left_only_correct'], 1)
+        self.assertEqual(pair['groups']['novel']['right_only_correct'], 1)
+        self.assertFalse(report['selection_candidate'])
+
+    def test_explicit_metric_anchor_keeps_legacy_default_counts(self):
+        target = torch.arange(4)
+        wrong = F.one_hot((target + 1) % 4, 4).float()
+        correct = F.one_hot(target, 4).float()
+        records = [{'targets': target, 'num_old': 2, 'reference_votes': wrong}]
+        legacy = evaluation.evaluate_records(records, lambda row: correct)
+        paired = evaluation.evaluate_records(records, lambda row: correct, lambda row: correct)
+        self.assertEqual(legacy['corrected_observations'], 4)
+        self.assertEqual(paired['corrected_observations'], 0)
+        self.assertEqual(paired['changed_observations'], 0)
+        self.assertEqual(legacy['harmonic_accuracy'], paired['harmonic_accuracy'])
 
     def test_cli_refuses_existing_output_before_loading_nonexistent_cache(self):
         with temporary_artifact_directory() as directory:

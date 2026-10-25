@@ -1,6 +1,6 @@
 # 性能优先 V3：诊断、条件原型估计与冻结评估
 
-更新：2026-10-25。复用已提取的 SAFD 基类缓存，主方法无需频率查询分支。
+更新：2026-10-26。复用已提取的 SAFD 基类缓存，主方法无需频率查询分支。
 
 ## 1. 实现范围
 
@@ -8,6 +8,7 @@
 
 - **P0**：完整 BiMC 参考、81 组分支温度/旧新偏置候选、仅组偏置控制、等描述数量控制。
 - **P1/P2**：独立较多样本教师原型、逐查询专家正确性并集。这两项是使用额外信息的诊断，不是可部署方法，不参与模型选择。
+- **筛查补充**：支持/教师样本银行 × 开启/关闭原 BiMC 视觉校准的四组对照；各单专家、相对校准参考的修正/破坏计数及旧/新类专家互补性。
 - **P3**：同参数预算的 `center` 原型回归、`boundary` 边界监督条件估计器，以及 `boundary + SAFD` 训练辅助。
 - **P4**：可选 FFT/普通增强辅助，要求缓存行与普通原图严格对齐。
 - 正式运行时加载冻结模型，只在每个新类到达时估计一次原型。旧原型与模型参数保持冻结；不保存历史逐样本支持特征；查询只编码原图。
@@ -70,12 +71,18 @@ done
 - `baseline` / `calibrated_reference`：校准本身带来多少改善。
 - `group_bias_only`：一般旧新类偏置控制。
 - `equal_description_count_control`：仅 max-description 分支统一数量；语义均值原型仍保持原定义。
-- `teacher_prototype_diagnostic.metrics`：更多独立教师图像是否改善原型。
+- `teacher_prototype_diagnostic.metrics`：旧版本保留字段，使用未经视觉校准的教师原型；与开启视觉校准的参考比较时同时改变样本银行和校准机制，不能单独归因为样本数改善。
 - `expert_union_diagnostic.metrics`：已有专家是否有互补空间。
+- `prototype_factorial_diagnostics`：在固定分支温度、组偏置、旧原型、协方差和文本下，分别隔离视觉校准与教师银行变化。`support_guided` 是校准参考；`teacher_guided` 对更多教师样本应用完全相同的视觉校准。
+- `expert_profile_diagnostics`：完整原 BiMC、校准 BiMC、融合原型、协方差、max-description 的单专家性能，以及每对专家的旧/新类正确性交集。每个单专家均在全部已见类上预测。
 
-后两项明确 `deployable=false, selection_candidate=false`，不能填成正式方法结果。如果教师原型相对强校准参考也没有可观改善，先停止 P3，分析表示或专家融合，不必盲目执行后续完整矩阵。
+教师和专家并集明确 `deployable=false, selection_candidate=false`，不能填成正式方法结果。新补充的所有对照都不自动参与模型选择。先比较相同视觉校准下的教师收益、关闭视觉校准的支持集控制、最强单专家与并集的差距，再决定是否执行 P3。教师银行独立于支持集，并非嵌套增加图像，其结果也不是严格性能上界。
+
+旧 `baseline` 等字段的修正/破坏计数继续以原 BiMC 为参考；新四组对照和单专家表的计数以校准 BiMC 为参考，具体对照差值中的计数以该对照声明的 `control` 为参考。计数单位是可重复的 stage-query 观测，不是去重图像。
 
 ## 5. 三个配对训练对照
+
+**2026-10-26：收到三份 CUB 筛查后，建议先执行第 9 节补充诊断，再决定是否投入本节训练与第 6 节正式矩阵。现有教师比较受视觉校准混杂影响，专家并集也缺少单专家对照。**
 
 首轮可先令 `FIT_SEED=2`；确认流程及验证信号后，再对 3/4 执行相同命令。不要根据正式测试集挑拟合种子。
 
@@ -196,3 +203,39 @@ tar -czf "$V3/cub_development_results.tar.gz" \
 模型 NPZ 本身体积较小，建议一起保存。正式评估还应保留 `summary.json` 和各运行的配置、支持清单、日志、metrics、predictions。
 
 新方案尚无完整 benchmark 结果。小样本真实 CLIP 测试只验证缓存、训练、导出和多会话接线，不能作为准确率提升证据。
+
+## 9. CUB 三份筛查后的补充诊断
+
+`summary2/3/4.json` 的均值：原 BiMC H=82.2538，校准参考 H=82.4127，未经视觉校准的 15-shot 教师 H=82.8530。教师相对校准参考新类 +3.9322pp、旧类 -2.1700pp、H +0.4404pp，三个划分均超出旧类允许下降 0.2pp 的保护范围。专家正确性并集 H=91.4928，但使用查询标签选专家，不能视为可部署的 +9.0801pp 改善。等描述数控制 H 变化平均 -0.0035pp。
+
+因此先复用相同缓存和划分参数补齐诊断，暂不扩大原型网络训练。同步 `engine/prototype_evaluation.py` 和 `tools/screen_prototype_space.py` 后运行：
+
+```bash
+cd /home/user/junnan/FSCIL/BiMC_Freq
+set -euo pipefail
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+CACHE=outputs/safd_metric_v2_20261022/cache/cub200_safd.npz
+DETAILS=outputs/prototype_estimator_screen_details_20261026
+mkdir -p "$DETAILS/logs"
+
+for S in 2 3 4; do
+  python -u tools/screen_prototype_space.py \
+    --cache "$CACHE" --seed "$S" --sequences 20 --teacher-shot 15 \
+    --device cpu --threads 1 --output-dir "$DETAILS/seed${S}" \
+    2>&1 | tee "$DETAILS/logs/seed${S}.log"
+done
+
+tar -czf "${DETAILS}.tar.gz" -C outputs "${DETAILS##*/}"
+```
+
+新目录各自保存 `summary.json`、`prototype_controls.json`、`expert_profiles.json`、`calibration.json`、`group_bias_control.json`、`protocol.json`、`provenance.json`。只重放缓存，不进行梯度训练、CLIP/SAFD 重新编码或正式测试。旧三份文件未记录 seed，以上 2/3/4 延续此前运行计划；应使用原运行的 `provenance.json` 核实。缓存与参数相同时 `protocol_sha256` 应与对应旧文件一致；不一致时不能当作严格配对复现。
+
+阅读顺序与后续分支：
+
+1. `prototype_factorial_diagnostics.contrasts.disable_guidance_support`：若仅关闭校准就能稳定取得收益，先把它作为简单控制，不将其归功于原型估计器。
+2. `teacher_vs_support_guided` / `teacher_vs_support_raw`：在相同校准状态下看教师改善是否保留，及是否仍明显伤害旧类。仅新类改善不足以支持整套 FSCIL 方法。
+3. `expert_profile_diagnostics.experts`：看固定单专家是否已经接近标签并集，尤其关注协方差专家在新类上独立使用的结果。若单专家足够强，优先验证固定融合/分组权重，作为后续可学习模块的强对照。
+4. 单专家都不足但旧/新类互补性稳定时，再考虑只在基类拟合的置信度/竞争类条件融合。预测规则不能读取查询真实类别，也不能用正式测试集挑阈值。
+5. 在无辅助主方法有稳定收益之后，再比较 SAFD、FFT、普通增强辅助；当前筛查未检验 SAFD 的独立贡献。
+
+三份摘要属于 CUB 基类开发筛查，不是正式增量测试。200 个 stage 共享图像和类别，不作 200 次独立统计重复，不据此计算显著性或承诺期刊录用。
