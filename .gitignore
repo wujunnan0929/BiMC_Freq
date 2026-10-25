@@ -14,5 +14,6 @@ docs/*
 !docs/frequency_guidance_ubuntu.md
 !docs/frequency_guidance_next_steps.md
 !docs/safd_metric_design.md
+!docs/safd_metric_diagnostics.md
 shared_dictionary_group_report*
 tools/*.local.ps1
