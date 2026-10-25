@@ -215,6 +215,12 @@ def extend_cfg(cfg):
     cfg.TRAINER.BiMC.SAFD_METRIC.MODEL_PATH = ''
     cfg.TRAINER.BiMC.SAFD_METRIC.GAIN = -1.0
 
+    cfg.TRAINER.BiMC.PROTOTYPE_ESTIMATOR = CN()
+    cfg.TRAINER.BiMC.PROTOTYPE_ESTIMATOR.ENABLED = False
+    cfg.TRAINER.BiMC.PROTOTYPE_ESTIMATOR.MODEL_PATH = ''
+    cfg.TRAINER.BiMC.PROTOTYPE_ESTIMATOR.BLEND = -1.0
+    cfg.TRAINER.BiMC.PROTOTYPE_ESTIMATOR.CALIBRATION = True
+
     # Frequency-aware prototype calibration.  The legacy path is training-free;
     # an optional base-session residual router can be enabled below.  Frequency
     # mode defaults to off so existing BiMC configs reproduce the original method.

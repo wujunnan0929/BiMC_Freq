@@ -15,5 +15,7 @@ docs/*
 !docs/frequency_guidance_next_steps.md
 !docs/safd_metric_design.md
 !docs/safd_metric_diagnostics.md
+!docs/performance_first_research_plan.md
+!docs/prototype_estimator_experiments.md
 shared_dictionary_group_report*
 tools/*.local.ps1

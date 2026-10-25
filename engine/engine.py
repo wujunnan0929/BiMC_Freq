@@ -67,12 +67,14 @@ class Runner:
         self.dual_frequency_report = None
         self.guidance_report = None
         self.safd_metric_state = None
+        self.prototype_estimator_state = None
         metric = cfg.TRAINER.BiMC.SAFD_METRIC
         if metric.ENABLED:
             b = cfg.TRAINER.BiMC
             if (b.FREQUENCY.ENABLED or b.FREQUENCY.ROUTER.ENABLED or b.RESIDUAL.ENABLED
                     or b.CONSENSUS.ENABLED or b.UNCERTAINTY.ENABLED
-                    or b.DUAL_FREQUENCY.ENABLED or b.GUIDANCE.ENABLED):
+                    or b.DUAL_FREQUENCY.ENABLED or b.GUIDANCE.ENABLED
+                    or b.PROTOTYPE_ESTIMATOR.ENABLED):
                 raise ValueError('SAFD_METRIC requires other optional adaptation branches disabled.')
             if not metric.MODEL_PATH:
                 raise ValueError('SAFD_METRIC.MODEL_PATH must identify a base-fitted model.npz.')
@@ -81,6 +83,20 @@ class Runner:
                 metric.MODEL_PATH, cfg, getattr(self.model.clip_model, 'clip_weight_sha256', None),
                 gain_override=metric.GAIN)
             verify_reference_content(self.safd_metric_state, cfg, self.data_manager)
+        estimator = cfg.TRAINER.BiMC.PROTOTYPE_ESTIMATOR
+        if estimator.ENABLED:
+            b = cfg.TRAINER.BiMC
+            if (b.FREQUENCY.ENABLED or b.FREQUENCY.ROUTER.ENABLED or b.RESIDUAL.ENABLED
+                    or b.CONSENSUS.ENABLED or b.UNCERTAINTY.ENABLED
+                    or b.DUAL_FREQUENCY.ENABLED or b.GUIDANCE.ENABLED or b.SAFD_METRIC.ENABLED):
+                raise ValueError('PROTOTYPE_ESTIMATOR requires other optional branches disabled.')
+            if not estimator.MODEL_PATH:
+                raise ValueError('PROTOTYPE_ESTIMATOR.MODEL_PATH must identify a base-fitted .npz.')
+            from engine.prototype_estimator_runtime import load_estimator
+            from engine.safd_metric_runtime import verify_reference_content
+            self.prototype_estimator_state = load_estimator(
+                estimator.MODEL_PATH, cfg, getattr(self.model.clip_model, 'clip_weight_sha256', None))
+            verify_reference_content(self.prototype_estimator_state, cfg, self.data_manager)
         if str(self.device).startswith('cuda'):
             torch.cuda.reset_peak_memory_stats()
         self.output_dir = Path(cfg.OUTPUT_DIR) if cfg.OUTPUT_DIR else None
@@ -95,6 +111,8 @@ class Runner:
             'description_proto', 'description_features', 'description_targets',
             'text_features', 'text_targets', 'image_proto', 'raw_image_mean',
         ]
+        if self.prototype_estimator_state is not None:
+            keys.append('estimated_image_proto')
         if self.model.frequency_fusion_enabled:
             keys.extend([
                 'frequency_image_proto', 'frequency_prompt_proto',
@@ -184,6 +202,9 @@ class Runner:
         if self.safd_metric_state is not None:
             from engine.safd_metric_runtime import metric_report
             payload['safd_metric'] = metric_report(self.safd_metric_state)
+        if self.prototype_estimator_state is not None:
+            from engine.prototype_estimator_runtime import estimator_report
+            payload['prototype_estimator'] = estimator_report(self.prototype_estimator_state)
         temporary = self.output_dir / 'metrics.json.tmp'
         temporary.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False),
@@ -195,6 +216,7 @@ class Runner:
         if self.output_dir is None or not self.cfg.TRAINER.BiMC.RESIDUAL.SAVE_CHECKPOINT:
             return
         head, router = self.model.residual_head, self.model.frequency_router
+        from engine.prototype_estimator_runtime import checkpoint_state
         payload = {
             'schema_version': 1, 'session': task_id,
             'config_yaml': self.cfg.dump(),
@@ -219,6 +241,7 @@ class Runner:
             'guidance_state': _cpu_state(self.model.guidance_state),
             'guidance_calibration': self.guidance_report,
             'safd_metric_state': _cpu_state(self.safd_metric_state),
+            'prototype_estimator_state': _cpu_state(checkpoint_state(self.prototype_estimator_state)),
             'metrics': self.sessions,
         }
         # Boundary snapshot. Pretrained CLIP is identified, not duplicated.
@@ -260,6 +283,13 @@ class Runner:
                 from engine.safd_metric_runtime import verify_base_bank
                 verify_base_bank(self.safd_metric_state, self.model._last_support_ids,
                                  current['raw_image_mean'].shape[-1])
+            if self.prototype_estimator_state is not None:
+                from engine.prototype_estimator_runtime import prepare_current
+                if task_id == 0:
+                    from engine.safd_metric_runtime import verify_base_bank
+                    verify_base_bank(self.prototype_estimator_state, self.model._last_support_ids,
+                                     current['raw_image_mean'].shape[-1])
+                prepare_current(self.prototype_estimator_state, self.cfg, current, states)
             if task_id == 0 and self.model.guidance_enabled:
                 from engine.guidance_calibration import initialize_guidance
                 self.guidance_report = initialize_guidance(self.model, self.cfg, current)
@@ -380,6 +410,11 @@ class Runner:
                 metrics['head_parameter_count'] = fitted_count
                 metrics['base_fit_parameter_count'] = fitted_count
                 metrics['incremental_trainable_parameter_count'] = 0
+            if self.prototype_estimator_state is not None:
+                fitted_count = self.prototype_estimator_state['metadata']['trainable_parameters']
+                metrics['head_parameter_count'] = fitted_count
+                metrics['base_fit_parameter_count'] = fitted_count
+                metrics['incremental_trainable_parameter_count'] = 0
             router_state = (self.model.frequency_router.state_dict()
                             if self.model.frequency_router is not None else {})
             metrics['retained_tensor_bytes'] = _tensor_bytes([
@@ -390,6 +425,9 @@ class Runner:
                 self.model.dual_frequency_state,
                 self.model.guidance_state,
                 self.safd_metric_state,
+                self.prototype_estimator_state,
+                (self.prototype_estimator_state['model'].state_dict()
+                 if self.prototype_estimator_state is not None else None),
             ])
             self.sessions.append(metrics)
             self.acc_list.append(round(metrics['accuracy'], 3))
@@ -463,6 +501,9 @@ class Runner:
             elif self.safd_metric_state is not None:
                 from engine.safd_metric_runtime import apply_session_metric
                 output = apply_session_metric(self.safd_metric_state, metric_classifier, features, reference)
+            elif self.prototype_estimator_state is not None:
+                from engine.prototype_estimator_runtime import apply_estimator
+                output = apply_estimator(self.prototype_estimator_state, self.cfg, state_dict, features, reference)
             else:
                 output = self.model.apply_incremental_residual(features, reference)
             if str(self.device).startswith('cuda'):
