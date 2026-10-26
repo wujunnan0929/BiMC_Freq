@@ -68,13 +68,14 @@ class Runner:
         self.guidance_report = None
         self.safd_metric_state = None
         self.prototype_estimator_state = None
+        self.competitive_fusion_state = None
         metric = cfg.TRAINER.BiMC.SAFD_METRIC
         if metric.ENABLED:
             b = cfg.TRAINER.BiMC
             if (b.FREQUENCY.ENABLED or b.FREQUENCY.ROUTER.ENABLED or b.RESIDUAL.ENABLED
                     or b.CONSENSUS.ENABLED or b.UNCERTAINTY.ENABLED
                     or b.DUAL_FREQUENCY.ENABLED or b.GUIDANCE.ENABLED
-                    or b.PROTOTYPE_ESTIMATOR.ENABLED):
+                    or b.PROTOTYPE_ESTIMATOR.ENABLED or b.COMPETITIVE_FUSION.ENABLED):
                 raise ValueError('SAFD_METRIC requires other optional adaptation branches disabled.')
             if not metric.MODEL_PATH:
                 raise ValueError('SAFD_METRIC.MODEL_PATH must identify a base-fitted model.npz.')
@@ -88,7 +89,8 @@ class Runner:
             b = cfg.TRAINER.BiMC
             if (b.FREQUENCY.ENABLED or b.FREQUENCY.ROUTER.ENABLED or b.RESIDUAL.ENABLED
                     or b.CONSENSUS.ENABLED or b.UNCERTAINTY.ENABLED
-                    or b.DUAL_FREQUENCY.ENABLED or b.GUIDANCE.ENABLED or b.SAFD_METRIC.ENABLED):
+                    or b.DUAL_FREQUENCY.ENABLED or b.GUIDANCE.ENABLED or b.SAFD_METRIC.ENABLED
+                    or b.COMPETITIVE_FUSION.ENABLED):
                 raise ValueError('PROTOTYPE_ESTIMATOR requires other optional branches disabled.')
             if not estimator.MODEL_PATH:
                 raise ValueError('PROTOTYPE_ESTIMATOR.MODEL_PATH must identify a base-fitted .npz.')
@@ -97,6 +99,20 @@ class Runner:
             self.prototype_estimator_state = load_estimator(
                 estimator.MODEL_PATH, cfg, getattr(self.model.clip_model, 'clip_weight_sha256', None))
             verify_reference_content(self.prototype_estimator_state, cfg, self.data_manager)
+        fusion = cfg.TRAINER.BiMC.COMPETITIVE_FUSION
+        if fusion.ENABLED:
+            b = cfg.TRAINER.BiMC
+            if (b.FREQUENCY.ENABLED or b.FREQUENCY.ROUTER.ENABLED or b.RESIDUAL.ENABLED
+                    or b.CONSENSUS.ENABLED or b.UNCERTAINTY.ENABLED or b.DUAL_FREQUENCY.ENABLED
+                    or b.GUIDANCE.ENABLED or b.SAFD_METRIC.ENABLED or b.PROTOTYPE_ESTIMATOR.ENABLED):
+                raise ValueError('COMPETITIVE_FUSION requires other optional branches disabled.')
+            if not fusion.MODEL_PATH:
+                raise ValueError('COMPETITIVE_FUSION.MODEL_PATH must identify a base-fitted .npz.')
+            from engine.competitive_runtime import load_fusion
+            from engine.safd_metric_runtime import verify_reference_content
+            self.competitive_fusion_state = load_fusion(
+                fusion.MODEL_PATH, cfg, getattr(self.model.clip_model, 'clip_weight_sha256', None))
+            verify_reference_content(self.competitive_fusion_state, cfg, self.data_manager)
         if str(self.device).startswith('cuda'):
             torch.cuda.reset_peak_memory_stats()
         self.output_dir = Path(cfg.OUTPUT_DIR) if cfg.OUTPUT_DIR else None
@@ -113,6 +129,8 @@ class Runner:
         ]
         if self.prototype_estimator_state is not None:
             keys.append('estimated_image_proto')
+        if self.competitive_fusion_state is not None:
+            keys.append('fusion_quality')
         if self.model.frequency_fusion_enabled:
             keys.extend([
                 'frequency_image_proto', 'frequency_prompt_proto',
@@ -205,6 +223,9 @@ class Runner:
         if self.prototype_estimator_state is not None:
             from engine.prototype_estimator_runtime import estimator_report
             payload['prototype_estimator'] = estimator_report(self.prototype_estimator_state)
+        if self.competitive_fusion_state is not None:
+            from engine.competitive_runtime import fusion_report
+            payload['competitive_fusion'] = fusion_report(self.competitive_fusion_state)
         temporary = self.output_dir / 'metrics.json.tmp'
         temporary.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False),
@@ -217,6 +238,7 @@ class Runner:
             return
         head, router = self.model.residual_head, self.model.frequency_router
         from engine.prototype_estimator_runtime import checkpoint_state
+        from engine.competitive_runtime import checkpoint_state as fusion_checkpoint_state
         payload = {
             'schema_version': 1, 'session': task_id,
             'config_yaml': self.cfg.dump(),
@@ -242,6 +264,7 @@ class Runner:
             'guidance_calibration': self.guidance_report,
             'safd_metric_state': _cpu_state(self.safd_metric_state),
             'prototype_estimator_state': _cpu_state(checkpoint_state(self.prototype_estimator_state)),
+            'competitive_fusion_state': _cpu_state(fusion_checkpoint_state(self.competitive_fusion_state)),
             'metrics': self.sessions,
         }
         # Boundary snapshot. Pretrained CLIP is identified, not duplicated.
@@ -279,6 +302,7 @@ class Runner:
                 torch.cuda.synchronize()
             support_build_seconds = time.perf_counter() - start
             current['data_source'], current['task_id'] = 'base_training_only' if task_id == 0 else 'incremental_training_only', task_id
+            fusion_prepare_seconds = 0.
             if task_id == 0 and self.safd_metric_state is not None:
                 from engine.safd_metric_runtime import verify_base_bank
                 verify_base_bank(self.safd_metric_state, self.model._last_support_ids,
@@ -290,6 +314,17 @@ class Runner:
                     verify_base_bank(self.prototype_estimator_state, self.model._last_support_ids,
                                      current['raw_image_mean'].shape[-1])
                 prepare_current(self.prototype_estimator_state, self.cfg, current, states)
+            if self.competitive_fusion_state is not None:
+                from engine.competitive_runtime import prepare_current
+                fusion_start = time.perf_counter()
+                if task_id == 0:
+                    from engine.safd_metric_runtime import verify_base_bank
+                    verify_base_bank(self.competitive_fusion_state, self.model._last_support_ids,
+                                     current['raw_image_mean'].shape[-1])
+                prepare_current(self.competitive_fusion_state, self.cfg, current)
+                if str(self.device).startswith('cuda'):
+                    torch.cuda.synchronize()
+                fusion_prepare_seconds = time.perf_counter() - fusion_start
             if task_id == 0 and self.model.guidance_enabled:
                 from engine.guidance_calibration import initialize_guidance
                 self.guidance_report = initialize_guidance(self.model, self.cfg, current)
@@ -394,6 +429,8 @@ class Runner:
             metrics['eval_seconds'] = time.perf_counter() - start
             metrics['fit_seconds'] = fit_seconds
             metrics['support_build_seconds'] = support_build_seconds
+            if self.competitive_fusion_state is not None:
+                metrics['fusion_prepare_seconds'] = fusion_prepare_seconds
             metrics['guidance_calibration_seconds'] = (self.guidance_report['calibration_seconds']
                                                        if task_id == 0 and self.guidance_report else 0.)
             metrics['support_image_encodings'] = support_encodings
@@ -415,6 +452,11 @@ class Runner:
                 metrics['head_parameter_count'] = fitted_count
                 metrics['base_fit_parameter_count'] = fitted_count
                 metrics['incremental_trainable_parameter_count'] = 0
+            if self.competitive_fusion_state is not None:
+                fitted_count = self.competitive_fusion_state['metadata']['trainable_parameters']
+                metrics['head_parameter_count'] = fitted_count
+                metrics['base_fit_parameter_count'] = fitted_count
+                metrics['incremental_trainable_parameter_count'] = 0
             router_state = (self.model.frequency_router.state_dict()
                             if self.model.frequency_router is not None else {})
             metrics['retained_tensor_bytes'] = _tensor_bytes([
@@ -428,6 +470,9 @@ class Runner:
                 self.prototype_estimator_state,
                 (self.prototype_estimator_state['model'].state_dict()
                  if self.prototype_estimator_state is not None else None),
+                self.competitive_fusion_state,
+                (self.competitive_fusion_state['model'].state_dict()
+                 if self.competitive_fusion_state is not None else None),
             ])
             self.sessions.append(metrics)
             self.acc_list.append(round(metrics['accuracy'], 3))
@@ -504,6 +549,9 @@ class Runner:
             elif self.prototype_estimator_state is not None:
                 from engine.prototype_estimator_runtime import apply_estimator
                 output = apply_estimator(self.prototype_estimator_state, self.cfg, state_dict, features, reference)
+            elif self.competitive_fusion_state is not None:
+                from engine.competitive_runtime import apply_fusion
+                output = apply_fusion(self.competitive_fusion_state, self.cfg, state_dict, features, reference)
             else:
                 output = self.model.apply_incremental_residual(features, reference)
             if str(self.device).startswith('cuda'):
@@ -525,6 +573,11 @@ class Runner:
             scores, targets, task_id, self.data_manager.class_index_in_task
         )
         metrics['reference_accuracy'] = float(100 * np.mean(references.argmax(1) == targets))
+        if self.competitive_fusion_state is not None:
+            from utils.competition_metrics import competition_errors
+            metrics['competition_errors'] = {
+                'reference': competition_errors(references, targets, self.cfg.DATASET.NUM_INIT_CLS),
+                'method': competition_errors(scores, targets, self.cfg.DATASET.NUM_INIT_CLS)}
         metrics['prediction_change_rate'] = float(100 * np.mean(scores.argmax(1) != references.argmax(1)))
         eligible = torch.cat(eligible_rows).numpy() if eligible_rows else None
         encoded = torch.cat(encoded_rows).numpy() if encoded_rows else None

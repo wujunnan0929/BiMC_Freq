@@ -221,6 +221,12 @@ def extend_cfg(cfg):
     cfg.TRAINER.BiMC.PROTOTYPE_ESTIMATOR.BLEND = -1.0
     cfg.TRAINER.BiMC.PROTOTYPE_ESTIMATOR.CALIBRATION = True
 
+    cfg.TRAINER.BiMC.COMPETITIVE_FUSION = CN()
+    cfg.TRAINER.BiMC.COMPETITIVE_FUSION.ENABLED = False
+    cfg.TRAINER.BiMC.COMPETITIVE_FUSION.MODEL_PATH = ''
+    cfg.TRAINER.BiMC.COMPETITIVE_FUSION.MODE = 'learned'
+    cfg.TRAINER.BiMC.COMPETITIVE_FUSION.BLEND = -1.0
+
     # Frequency-aware prototype calibration.  The legacy path is training-free;
     # an optional base-session residual router can be enabled below.  Frequency
     # mode defaults to off so existing BiMC configs reproduce the original method.
