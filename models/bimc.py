@@ -53,6 +53,12 @@ class BiMC(nn.Module):
         super(BiMC, self).__init__()
         self.cfg = cfg
         self.device = device
+        self.completion_enabled = cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION.ENABLED
+        self.completion_state = None
+        self.completion_views = None
+        if self.completion_enabled:
+            from engine.completion_calibration import validate_completion_settings
+            validate_completion_settings(cfg)
         print(f"Loading CLIP (backbone: {cfg.MODEL.BACKBONE.NAME})")
         print(f"Prompt template:{template}")
         self.template = template
@@ -86,6 +92,12 @@ class BiMC(nn.Module):
                                   or (self.uncertainty_enabled
                                       and cfg.TRAINER.BiMC.UNCERTAINTY.VIEW_CONTROL in ('frequency', 'joint')))
         self.image_encoding_counts = {'original': 0, 'auxiliary': 0}
+        if self.completion_enabled and cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION.VIEW_CONTROL != 'original':
+            from models.safd_interventions import NestedInterventionViews
+            control = cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION.VIEW_CONTROL
+            source = 'fft' if control == 'frequency' else control
+            self.completion_views = NestedInterventionViews(
+                source, cfg.TRAINER.BiMC.FREQUENCY).to(self.device)
         if self.dual_frequency_enabled:
             from engine.dual_frequency_calibration import validate_dual_settings
             validate_dual_settings(cfg)
@@ -253,6 +265,7 @@ class BiMC(nn.Module):
         all_features = []
         all_labels = []
         all_frequency_features = []
+        all_completion_features = []
         sample_ids = []
         for batch in loader:
             images, labels = self.parse_batch(batch)
@@ -260,6 +273,9 @@ class BiMC(nn.Module):
             features = F.normalize(raw_features, dim=-1)
             all_features.append(features)
             all_labels.append(labels)
+            if getattr(self, 'completion_enabled', False):
+                all_completion_features.append(
+                    self.extract_completion_img_feature(images, original_features=features))
             identifiers = batch.get('global_index', batch.get('sample_id'))
             if identifiers is None:
                 identifiers = torch.arange(len(sample_ids), len(sample_ids) + len(labels))
@@ -271,6 +287,8 @@ class BiMC(nn.Module):
         all_features = torch.cat(all_features, dim=0)
         all_labels = torch.cat(all_labels, dim=0)
         self._last_support_ids = sample_ids
+        if getattr(self, 'completion_enabled', False):
+            self._completion_support_features = torch.cat(all_completion_features, dim=0)
         if class_index is None:
             ordered_labels = [int(label) for label in torch.unique(all_labels)]
         else:
@@ -999,6 +1017,12 @@ class BiMC(nn.Module):
         }
         state.update(frequency_state)
         state.update(guidance_state)
+        if getattr(self, 'completion_enabled', False):
+            state['completion_features'] = self._completion_support_features
+            del self._completion_support_features
+            state['completion_text'] = self.completion_text_features(
+                class_names, class_index, text_features, description_features,
+                description_targets, description_proto)
         if self.guidance_enabled:
             state['frequency_features'] = all_frequency_features
         state['raw_image_mean'] = raw_image_mean
@@ -1348,6 +1372,55 @@ class BiMC(nn.Module):
         return logits
 
 
+
+    @torch.no_grad()
+    def completion_text_features(self, class_names, class_index, text_features,
+                                 description_features, description_targets, description_proto):
+        """Fixed support-independent anchors; no support-grounded text selection."""
+        options = self.cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION
+        weight = self.cfg.TRAINER.BiMC.LAMBDA_T if self.cfg.TRAINER.BiMC.TEXT_CALIBRATION else 0.
+        ordinary = F.normalize((1 - weight) * text_features.float()
+                               + weight * description_proto.float(), dim=-1)
+        if options.VIEW_CONTROL == 'original':
+            return ordinary[:, None]
+        semantic_index = options.SEMANTIC_PERMUTATION[options.AUXILIARY_INDEX - 1]
+        if options.SEMANTIC_SOURCE == 'structured':
+            auxiliary = self.inference_frequency_text_feature(class_names)[:, semantic_index]
+        elif options.SEMANTIC_SOURCE == 'explicit':
+            candidates = self.inference_explicit_frequency_description_candidates(
+                class_names, self.cfg.TRAINER.BiMC.FREQUENCY.EXPLICIT_DESCRIPTION_PATH,
+                max_candidates=options.CANDIDATES_PER_BAND)
+            auxiliary = F.normalize(candidates[:, semantic_index].float().mean(1), dim=-1)
+        elif options.SEMANTIC_SOURCE == 'ordinary':
+            # Match explicit description budgets using fixed text order only.
+            candidates = [description_features[description_targets == int(c)]
+                          for c in class_index]
+            count = options.CANDIDATES_PER_BAND
+            if any(len(values) < count for values in candidates):
+                raise ValueError('Completion ordinary text bank has fewer than CANDIDATES_PER_BAND prompts.')
+            auxiliary = F.normalize(torch.stack([values[:count].float().mean(0)
+                                                  for values in candidates]), dim=-1)
+        else:
+            raise ValueError('Unsupported completion semantic source.')
+        return torch.stack((ordinary, F.normalize(auxiliary.float(), dim=-1)), dim=1)
+
+    @torch.no_grad()
+    def extract_completion_img_feature(self, images, original_features):
+        """Encode exactly one auxiliary SUPPORT view, reusing original features."""
+        options = self.cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION
+        # inference_all_img_feature already normalized these features. Reuse
+        # them exactly so the joint original block matches the reference cache.
+        original = original_features.float()
+        if options.VIEW_CONTROL == 'original':
+            return original[:, None]
+        if options.VIEW_CONTROL == 'repeat':
+            return original[:, None].expand(-1, 2, -1).clone()
+        if self.completion_views is None:
+            raise RuntimeError('Completion support views have not been initialized.')
+        views = self.completion_views(images.to(self.device))
+        auxiliary = self.clip_model.encode_image(views[:, options.AUXILIARY_INDEX])
+        self.image_encoding_counts['auxiliary'] += len(images)
+        return torch.stack((original, F.normalize(auxiliary.float(), dim=-1)), dim=1)
 
     @torch.no_grad()
     def extract_img_feature(self, images):

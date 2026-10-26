@@ -66,6 +66,7 @@ class Runner:
         self.uncertainty_report = None
         self.dual_frequency_report = None
         self.guidance_report = None
+        self.completion_report = None
         self.safd_metric_state = None
         self.prototype_estimator_state = None
         self.competitive_fusion_state = None
@@ -75,7 +76,8 @@ class Runner:
             if (b.FREQUENCY.ENABLED or b.FREQUENCY.ROUTER.ENABLED or b.RESIDUAL.ENABLED
                     or b.CONSENSUS.ENABLED or b.UNCERTAINTY.ENABLED
                     or b.DUAL_FREQUENCY.ENABLED or b.GUIDANCE.ENABLED
-                    or b.PROTOTYPE_ESTIMATOR.ENABLED or b.COMPETITIVE_FUSION.ENABLED):
+                    or b.PROTOTYPE_ESTIMATOR.ENABLED or b.COMPETITIVE_FUSION.ENABLED
+                    or b.PROTOTYPE_COMPLETION.ENABLED):
                 raise ValueError('SAFD_METRIC requires other optional adaptation branches disabled.')
             if not metric.MODEL_PATH:
                 raise ValueError('SAFD_METRIC.MODEL_PATH must identify a base-fitted model.npz.')
@@ -90,7 +92,7 @@ class Runner:
             if (b.FREQUENCY.ENABLED or b.FREQUENCY.ROUTER.ENABLED or b.RESIDUAL.ENABLED
                     or b.CONSENSUS.ENABLED or b.UNCERTAINTY.ENABLED
                     or b.DUAL_FREQUENCY.ENABLED or b.GUIDANCE.ENABLED or b.SAFD_METRIC.ENABLED
-                    or b.COMPETITIVE_FUSION.ENABLED):
+                    or b.COMPETITIVE_FUSION.ENABLED or b.PROTOTYPE_COMPLETION.ENABLED):
                 raise ValueError('PROTOTYPE_ESTIMATOR requires other optional branches disabled.')
             if not estimator.MODEL_PATH:
                 raise ValueError('PROTOTYPE_ESTIMATOR.MODEL_PATH must identify a base-fitted .npz.')
@@ -104,7 +106,8 @@ class Runner:
             b = cfg.TRAINER.BiMC
             if (b.FREQUENCY.ENABLED or b.FREQUENCY.ROUTER.ENABLED or b.RESIDUAL.ENABLED
                     or b.CONSENSUS.ENABLED or b.UNCERTAINTY.ENABLED or b.DUAL_FREQUENCY.ENABLED
-                    or b.GUIDANCE.ENABLED or b.SAFD_METRIC.ENABLED or b.PROTOTYPE_ESTIMATOR.ENABLED):
+                    or b.GUIDANCE.ENABLED or b.SAFD_METRIC.ENABLED or b.PROTOTYPE_ESTIMATOR.ENABLED
+                    or b.PROTOTYPE_COMPLETION.ENABLED):
                 raise ValueError('COMPETITIVE_FUSION requires other optional branches disabled.')
             if not fusion.MODEL_PATH:
                 raise ValueError('COMPETITIVE_FUSION.MODEL_PATH must identify a base-fitted .npz.')
@@ -129,6 +132,8 @@ class Runner:
         ]
         if self.prototype_estimator_state is not None:
             keys.append('estimated_image_proto')
+        if self.cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION.ENABLED:
+            keys.append('completion_reference_proto')
         if self.competitive_fusion_state is not None:
             keys.append('fusion_quality')
         if self.model.frequency_fusion_enabled:
@@ -208,6 +213,7 @@ class Runner:
             'uncertainty': self.uncertainty_report,
             'dual_frequency': self.dual_frequency_report,
             'guidance': self.guidance_report,
+            'prototype_completion': self.completion_report,
             'total_wall_seconds': time.perf_counter() - self.wall_start,
             'peak_gpu_memory_bytes': (torch.cuda.max_memory_allocated()
                                       if str(self.device).startswith('cuda') else None),
@@ -262,6 +268,8 @@ class Runner:
             'dual_frequency_calibration': self.dual_frequency_report,
             'guidance_state': _cpu_state(self.model.guidance_state),
             'guidance_calibration': self.guidance_report,
+            'completion_state': _cpu_state(getattr(self.model, 'completion_state', None)),
+            'completion_calibration': self.completion_report,
             'safd_metric_state': _cpu_state(self.safd_metric_state),
             'prototype_estimator_state': _cpu_state(checkpoint_state(self.prototype_estimator_state)),
             'competitive_fusion_state': _cpu_state(fusion_checkpoint_state(self.competitive_fusion_state)),
@@ -284,6 +292,9 @@ class Runner:
             raise ValueError('DUAL_FREQUENCY.BASE_ONLY requires DUAL_FREQUENCY.ENABLED.')
         if self.cfg.TRAINER.BiMC.GUIDANCE.BASE_ONLY and not self.model.guidance_enabled:
             raise ValueError('GUIDANCE.BASE_ONLY requires GUIDANCE.ENABLED.')
+        if (self.cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION.BASE_ONLY
+                and not self.cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION.ENABLED):
+            raise ValueError('PROTOTYPE_COMPLETION.BASE_ONLY requires PROTOTYPE_COMPLETION.ENABLED.')
         self._write_results('running')
         for task_id in range(self.data_manager.num_tasks):
             self.model.eval()
@@ -302,6 +313,18 @@ class Runner:
                 torch.cuda.synchronize()
             support_build_seconds = time.perf_counter() - start
             current['data_source'], current['task_id'] = 'base_training_only' if task_id == 0 else 'incremental_training_only', task_id
+            if self.cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION.ENABLED:
+                from engine.completion_calibration import initialize_completion, prepare_completion
+                current['completion_reference_proto'] = current['image_proto'].clone()
+                if task_id == 0:
+                    self.completion_report = initialize_completion(self.model, self.cfg, current)
+                    if self.output_dir is not None:
+                        (self.output_dir / 'completion_calibration.json').write_text(
+                            json.dumps(self.completion_report, indent=2, ensure_ascii=False, allow_nan=False),
+                            encoding='utf-8')
+                    print('Prototype completion:', self.completion_report.get('selected_blend'))
+                else:
+                    prepare_completion(self.model, self.cfg, current)
             fusion_prepare_seconds = 0.
             if task_id == 0 and self.safd_metric_state is not None:
                 from engine.safd_metric_runtime import verify_base_bank
@@ -412,12 +435,14 @@ class Runner:
 
             # Release sample-level image caches before proceeding to evaluation.
             for key in ('images_features', 'images_targets', 'frequency_features',
-                        'frequency_description_candidates', 'uncertainty_features', 'guidance_sample_ids'):
+                        'frequency_description_candidates', 'uncertainty_features', 'guidance_sample_ids',
+                        'completion_features', 'completion_text'):
                 current.pop(key, None)
             if (self.cfg.TRAINER.BiMC.RESIDUAL.BASE_ONLY
                     or self.cfg.TRAINER.BiMC.UNCERTAINTY.BASE_ONLY
                     or self.cfg.TRAINER.BiMC.DUAL_FREQUENCY.BASE_ONLY
-                    or self.cfg.TRAINER.BiMC.GUIDANCE.BASE_ONLY):
+                    or self.cfg.TRAINER.BiMC.GUIDANCE.BASE_ONLY
+                    or self.cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION.BASE_ONLY):
                 self._save_checkpoint(task_id, states)
                 self._write_results('base_validation_completed')
                 print('Base-only validation complete; no benchmark test images were evaluated.')
@@ -447,6 +472,10 @@ class Runner:
                 metrics['head_parameter_count'] = fitted_count
                 metrics['base_fit_parameter_count'] = fitted_count
                 metrics['incremental_trainable_parameter_count'] = 0
+            if self.cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION.ENABLED:
+                metrics['base_fit_parameter_count'] = 0
+                metrics['incremental_trainable_parameter_count'] = 0
+                metrics['completion_blend'] = self.completion_report['selected_blend']
             if self.prototype_estimator_state is not None:
                 fitted_count = self.prototype_estimator_state['metadata']['trainable_parameters']
                 metrics['head_parameter_count'] = fitted_count
@@ -466,6 +495,7 @@ class Runner:
                 self.model.uncertainty_state,
                 self.model.dual_frequency_state,
                 self.model.guidance_state,
+                getattr(self.model, 'completion_state', None),
                 self.safd_metric_state,
                 self.prototype_estimator_state,
                 (self.prototype_estimator_state['model'].state_dict()
@@ -494,6 +524,13 @@ class Runner:
             self.model, self.cfg, state_dict,
             len(self.data_manager.class_index_in_task[0]),
         )
+        completion_scorer = None
+        if self.cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION.ENABLED:
+            completion_scorer = scorer
+            reference_state = {**state_dict, 'image_proto': state_dict['completion_reference_proto']}
+            scorer = make_reference_scorer(
+                self.model, self.cfg, reference_state,
+                len(self.data_manager.class_index_in_task[0]))
         loader = self.data_manager.get_dataloader(task_id, source='test', mode='test')
         query_encoding_seconds, query_classification_seconds = 0., 0.
         scores, references, targets = [], [], []
@@ -523,7 +560,9 @@ class Runner:
             query_encoding_seconds += time.perf_counter() - encoding_clock
             classification_clock = time.perf_counter()
             reference = scorer(features, frequency_features)
-            if self.model.consensus_enabled:
+            if completion_scorer is not None:
+                output = completion_scorer(features, None)
+            elif self.model.consensus_enabled:
                 output, detail = self.model.apply_frequency_consensus(
                     images, features, reference, state_dict['raw_frequency_mean'],
                     state_dict['frequency_consensus_text_proto'],
@@ -573,7 +612,7 @@ class Runner:
             scores, targets, task_id, self.data_manager.class_index_in_task
         )
         metrics['reference_accuracy'] = float(100 * np.mean(references.argmax(1) == targets))
-        if self.competitive_fusion_state is not None:
+        if self.competitive_fusion_state is not None or completion_scorer is not None:
             from utils.competition_metrics import competition_errors
             metrics['competition_errors'] = {
                 'reference': competition_errors(references, targets, self.cfg.DATASET.NUM_INIT_CLS),
@@ -616,6 +655,8 @@ class Runner:
                             else self.cfg.TRAINER.BiMC.CONSENSUS.SAVE_PREDICTIONS)
         if self.model.guidance_enabled:
             save_predictions = self.cfg.TRAINER.BiMC.GUIDANCE.SAVE_PREDICTIONS
+        if self.cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION.ENABLED:
+            save_predictions = self.cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION.SAVE_PREDICTIONS
         if self.output_dir is not None and save_predictions:
             first = references.argmax(1)
             remaining = references.copy()

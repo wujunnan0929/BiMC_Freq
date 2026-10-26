@@ -221,6 +221,30 @@ def extend_cfg(cfg):
     cfg.TRAINER.BiMC.PROTOTYPE_ESTIMATOR.BLEND = -1.0
     cfg.TRAINER.BiMC.PROTOTYPE_ESTIMATOR.CALIBRATION = True
 
+    # Closed-form support-only joint-view prototype completion. No query views.
+    cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION = CN()
+    completion = cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION
+    completion.ENABLED = False
+    completion.VIEW_CONTROL = 'frequency'
+    completion.AUXILIARY_INDEX = 1
+    completion.SEMANTIC_SOURCE = 'structured'
+    completion.SEMANTIC_PERMUTATION = [0, 1, 2]
+    completion.CANDIDATES_PER_BAND = 5
+    completion.RANK = 16
+    completion.SHRINKAGE = 0.2
+    completion.RIDGE = 1e-5
+    completion.CROSS_VIEW = True
+    completion.BLEND_GRID = [0.0, 0.25, 0.5, 1.0]
+    completion.AUTO_CALIBRATE = True
+    completion.BLEND = 0.5
+    completion.CALIBRATION_SEED = -1
+    completion.VAL_SEQUENCES = 20
+    completion.SHOT = 5
+    completion.QUERY = 5
+    completion.MAX_GROUP_DROP_PP = 0.2
+    completion.BASE_ONLY = False
+    completion.SAVE_PREDICTIONS = True
+
     cfg.TRAINER.BiMC.COMPETITIVE_FUSION = CN()
     cfg.TRAINER.BiMC.COMPETITIVE_FUSION.ENABLED = False
     cfg.TRAINER.BiMC.COMPETITIVE_FUSION.MODEL_PATH = ''
@@ -330,7 +354,10 @@ def setup_cfg(dataset_cfg_file, method_cfg_file, opts=None):
     frequency = cfg.TRAINER.BiMC.FREQUENCY
     dual = cfg.TRAINER.BiMC.DUAL_FREQUENCY
     guidance = cfg.TRAINER.BiMC.GUIDANCE
+    completion = cfg.TRAINER.BiMC.PROTOTYPE_COMPLETION
     needs_explicit = ((guidance.ENABLED and guidance.MODE != 'visual' and guidance.SEMANTIC_SOURCE == 'explicit')
+                      or (completion.ENABLED and completion.VIEW_CONTROL != 'original'
+                          and completion.SEMANTIC_SOURCE == 'explicit')
                       or (dual.ENABLED and dual.SEMANTIC_SOURCE == 'explicit')
                       or (frequency.USE_EXPLICIT_DESCRIPTIONS and
                           (frequency.ENABLED or cfg.TRAINER.BiMC.CONSENSUS.ENABLED)))

@@ -2,6 +2,8 @@
 
 日期：2026-10-26。代码已实现，本轮是基类开发诊断，不运行正式 benchmark，不导出可直接用于正式矩阵的模型。
 
+**已收到 seed2 结果：组合表示产生非零学习信号，但原规模保护仍未通过。** `group_prior_standardized` 的 matched ΔH=+0.3768pp、original ΔH=+1.0489pp，original ΔB=+3.0120pp、ΔN=-1.1973pp；`joint_prior_standardized` 为 matched/original ΔH=+0.4948/+0.3746pp，original ΔN=-0.2360pp。其余六个版本仍回退。由实际查询数重建的 original 平均任务整体准确率变化为 group +0.6284pp、joint -0.3339pp，不能只据 H 判断优劣。当前首选简化的 group 进行跨划分复核；仍不运行正式 40 次矩阵。完整审计位于 `outputs/competitive_evidence_analysis_20261026/analysis_zh.md`。
+
 ## 1. 要回答的问题
 
 上一轮四个 seed2 学习版本都选择零修正，最高非零 H 也低于参考。训练总类数仅 15–50，而原验证全部为 55–100，不能直接区分类别迁移、任务规模外推、证据尺度和训练目标的影响。
@@ -112,3 +114,35 @@ python -u tools/diagnose_competitive_evidence.py \
 5. 两组均有额外增益且通过保护：预先固定配置后，再在已有 seed3/4 对应锚点上重复诊断，之后才考虑全基类重拟合、SAFD 消融和正式测试。
 
 这轮优先回传脚本自动生成的 `${OUT}.tar.gz`。不需要包含大型缓存，不进入上一轮的 40 次 benchmark 矩阵。
+
+## 7. 已有信号后的有限复核命令
+
+先固定已有输入组合，在 seed3/4 上各跑 group/joint 两个对照，共四次训练。本步保持原 matched-H 选择规则、损失和预算，目的是复核当前信号；之后再单独比较整体准确率优先的选择/风险控制，避免同时改变多个因素。
+
+```bash
+cd /home/user/junnan/FSCIL/BiMC_Freq
+set -euo pipefail
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+CACHE=outputs/safd_metric_v2_20261022/cache/cub200_safd.npz
+
+for S in 3 4; do
+  OUT=outputs/competitive_evidence_cub200_fit${S}_priorstd_20261026
+  python -u tools/diagnose_competitive_evidence.py \
+    --cache "$CACHE" \
+    --anchor-model "outputs/competitive_fusion_cub200_20261026/models/cub200_fixed_fit${S}.npz" \
+    --output-dir "$OUT" --seed "$S" --sequences 20 --teacher-shot 15 \
+    --methods group joint --representations prior_standardized \
+    --steps 300 --episode-pool 100 --validate-every 50 \
+    --probe-steps 100 --device cpu --threads 1 \
+    2>&1 | tee "${OUT}.log"
+  tar -czf "${OUT}.tar.gz" -C outputs "${OUT##*/}"
+done
+```
+
+这两份复核仍是开发诊断，不是完整原始基类重拟合或正式增量测试。seed2 的组合输入已被本轮筛查选出，不把后续原规模观察当作从未使用的新测试集。
+
+## 8. 下一版选择准则与决策问题
+
+本轮暴露了两个区别：组身份 AUROC 较高不等于候选切换有净分类收益；平均 H 提高也不等于平均整体准确率提高。后续应对齐项目正式报告的平均/最终整体准确率，并保留 B/N 风险与逐阶段指标，H 作为平衡辅助。
+
+当前 group 的原规模第一阶段整体准确率约 -5.44pp，最后阶段 +3.01pp。可检验的下一版方向是保留 BiMC 强参考、仅对有足够证据且预期净收益为正的查询做选择性纠错，并为新类正确预测被误改设置单独预算。不是直接把高 AUROC 当作任意阈值都安全，也不是在本次结果后放宽 .2pp 来标记通过。这一新决策器尚未实现，风险与阶段校准仍需新的受控实验。
