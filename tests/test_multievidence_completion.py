@@ -160,6 +160,64 @@ class MultiEvidenceCompletionTest(unittest.TestCase):
         self.assertTrue(torch.equal(first['basis'], second['basis']))
         self.assertTrue(torch.equal(first['between'], second['between']))
 
+    def test_adding_heterogeneous_visual_measurement_keeps_existing_diagonal_noise_blocks(self):
+        visual, labels, text, ids = fixture()
+        ordinary = {'ordinary':text['shape']}
+        first = model({'final':visual['final']},labels,ordinary,ids)
+        added = {'final':visual['final'],'heterogeneous':100*visual['layer_3']}
+        second = model(added,labels,ordinary,ids,target_basis=first['basis'])
+        def block(state,name):
+            found=next(b for b in state['blocks'] if b['name']==name)
+            return slice(found['begin'],found['end'])
+        self.assertTrue(torch.equal(first['basis'],second['basis']))
+        self.assertTrue(torch.equal(first['between'],second['between']))
+        torch.testing.assert_close(first['W'][block(first,'final'),block(first,'final')],
+                                   second['W'][block(second,'final'),block(second,'final')],atol=1e-12,rtol=1e-12)
+        torch.testing.assert_close(first['Q'][block(first,'ordinary'),block(first,'ordinary')],
+                                   second['Q'][block(second,'ordinary'),block(second,'ordinary')],atol=1e-10,rtol=1e-10)
+        self.assertEqual(second['covariance_regularization'],'block_local_diagonal_targets_psd_cross_attenuation')
+        for key in ('Q','W'):
+            self.assertGreaterEqual(float(torch.linalg.eigvalsh(second[key]).min()),-1e-8)
+        result=predict_model(second,added,labels,ordinary,ids)
+        self.assertTrue(torch.isfinite(result).all())
+
+    def test_adding_missing_text_measurement_keeps_shared_text_noise_block(self):
+        visual, labels, text, ids = fixture()
+        visual={'final':visual['final']}
+        ordinary={'ordinary':text['shape']}
+        first=model(visual,labels,ordinary,ids)
+        added={**ordinary,'heterogeneous_text':100*text['shape'].roll(2,0)}
+        masks={'ordinary':torch.ones(len(ids),dtype=torch.bool),
+               'heterogeneous_text':torch.tensor([True,False,True,True,False,True,True,True])}
+        second=model(visual,labels,added,ids,target_basis=first['basis'],text_masks=masks)
+        def block(state,name):
+            found=next(b for b in state['blocks'] if b['name']==name)
+            return slice(found['begin'],found['end'])
+        self.assertTrue(torch.equal(first['W'][:3,:3],second['W'][:3,:3]))
+        torch.testing.assert_close(first['Q'][block(first,'ordinary'),block(first,'ordinary')],
+                                   second['Q'][block(second,'ordinary'),block(second,'ordinary')],atol=1e-10,rtol=1e-10)
+        self.assertGreaterEqual(float(torch.linalg.eigvalsh(second['Q']).min()),-1e-8)
+        self.assertTrue(torch.all(second['Q'][:3]==0))
+        self.assertTrue(torch.all(second['W'][3:]==0))
+        self.assertTrue(torch.isfinite(predict_model(second,visual,labels,added,ids,text_masks=masks)).all())
+
+    def test_pairwise_indefinite_covariance_preserves_fixed_diagonal_blocks_and_psd(self):
+        from models.multievidence_completion import _measurement_covariance
+        raw=torch.tensor([[1.,3.,.5],[3.,1.,-3.],[.5,-3.,1.]],dtype=torch.float64)
+        regularized,cross_scale=_measurement_covariance(raw,[(0,1),(1,2),(2,3)],.2)
+        self.assertGreaterEqual(cross_scale,0)
+        self.assertLess(cross_scale,1)
+        self.assertTrue(torch.equal(regularized.diagonal(),torch.ones(3,dtype=torch.float64)))
+        self.assertGreaterEqual(float(torch.linalg.eigvalsh(regularized).min()),-1e-10)
+
+    def test_large_auxiliary_variance_cannot_relax_absolute_psd_validity(self):
+        from models.multievidence_completion import _measurement_covariance
+        raw=torch.tensor([[1.,2e6],[2e6,1e12]],dtype=torch.float64)
+        regularized,cross_scale=_measurement_covariance(raw,[(0,1),(1,2)],.2)
+        self.assertTrue(torch.equal(regularized.diagonal(),raw.diagonal()))
+        self.assertLess(cross_scale,1.)
+        self.assertGreaterEqual(float(torch.linalg.eigvalsh(regularized).min()),-1.01e-10)
+
     def test_requested_class_order_and_support_order_are_invariant(self):
         visual, labels, text, ids = fixture()
         state = model(visual, labels, text, ids)

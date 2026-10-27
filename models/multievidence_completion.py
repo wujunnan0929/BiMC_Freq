@@ -12,7 +12,7 @@ import math
 import torch
 
 
-FORMAT = 'typed_multievidence_completion_v1'
+FORMAT = 'typed_multievidence_completion_v2'
 
 
 def _real(value, name, device=None):
@@ -65,6 +65,40 @@ def _psd(matrix, shrinkage=0., floor=0.):
     identity = torch.eye(len(matrix), device=matrix.device, dtype=matrix.dtype)
     result = (1 - shrinkage) * matrix + (shrinkage * scale + floor) * identity
     return (result + result.T) / 2
+
+
+def _measurement_covariance(matrix, blocks, shrinkage):
+    """Regularize each diagonal block locally, attenuating only cross blocks.
+
+    Adding a heterogeneous measurement cannot change an existing block's
+    isotropic target. Pairwise missing-data residual covariances may be
+    indefinite, so scale cross blocks down until the fixed diagonal blocks
+    admit a PSD joint matrix. No global eigenvalue projection changes them.
+    """
+    matrix = (matrix + matrix.T) / 2
+    diagonal, original_diagonal = torch.zeros_like(matrix), torch.zeros_like(matrix)
+    for begin, end in blocks:
+        diagonal[begin:end, begin:end] = _psd(matrix[begin:end, begin:end], shrinkage)
+        original_diagonal[begin:end, begin:end] = matrix[begin:end, begin:end]
+    cross = (1-shrinkage) * (matrix-original_diagonal)
+    # Prediction checks PSD with an absolute tolerance. A high-variance
+    # heterogeneous block must not authorize a materially negative eigenvalue
+    # in another block merely by increasing a global relative tolerance.
+    tolerance = min(float(diagonal.diagonal().abs().max().clamp_min(1e-12))*1e-12, 1e-10)
+    def valid(scale):
+        return float(torch.linalg.eigvalsh(diagonal+scale*cross).min()) >= -tolerance
+    scale = 1.
+    if not valid(scale):
+        lower, upper = 0., 1.
+        for _ in range(45):
+            middle = (lower+upper)/2
+            if valid(middle):
+                lower = middle
+            else:
+                upper = middle
+        scale = lower
+    result = diagonal + scale*cross
+    return (result+result.T)/2, scale
 
 
 def _basis(scatter, rank):
@@ -223,7 +257,8 @@ def fit_model(visual_blocks, labels, text_blocks, class_ids, *, target_rank=16,
     target_r = blocks[0]['rank']
     u = observations[:, :target_r]
     w = u.new_zeros(dimension, dimension)
-    w[:visual_dimension, :visual_dimension] = _psd(within, shrinkage)
+    w[:visual_dimension, :visual_dimension], w_cross_scale = _measurement_covariance(
+        within, [(b['begin'], b['end']) for b in blocks if b['kind']=='visual'], shrinkage)
     within_u = within[:target_r, :target_r]
     observed_target_cov = _covariance(u)
     prior_floor = float((observed_target_cov.diagonal().mean()
@@ -276,8 +311,11 @@ def fit_model(visual_blocks, labels, text_blocks, class_ids, *, target_rank=16,
             a, b = noise_residual[paired, i], noise_residual[paired, j]
             correction = torch.einsum('cir,rs,cjs,c->ij', a, within, b, counts[paired].reciprocal()) / n
             q[i, j] = empirical - correction
+    q_cross_scale = 1.
     if dimension > target_r:
-        q[target_r:, target_r:] = _psd(q[target_r:, target_r:], shrinkage)
+        q[target_r:, target_r:], q_cross_scale = _measurement_covariance(
+            q[target_r:, target_r:],
+            [(b['begin']-target_r, b['end']-target_r) for b in blocks[1:]], shrinkage)
     # Numerical solver jitter is intentionally not stored in Q or W.
     state = {'format': FORMAT, 'basis': blocks[0]['basis'], 'blocks': blocks,
              'H': h.detach(), 'bias': bias.detach(), 'mean': mean.detach(),
@@ -287,6 +325,8 @@ def fit_model(visual_blocks, labels, text_blocks, class_ids, *, target_rank=16,
              'ridge': ridge, 'shrinkage': shrinkage, 'solver_ridge': solver_ridge,
              'prior_covariance_floor': prior_floor,
              'solver_regularization': 'relative_per_measurement_diagonal',
+             'covariance_regularization': 'block_local_diagonal_targets_psd_cross_attenuation',
+             'W_cross_block_scale': w_cross_scale, 'Q_cross_block_scale': q_cross_scale,
              'visual_aliases': visual_aliases, 'text_aliases': text_aliases,
              'dropped_text_blocks': dropped, 'fit_class_ids': ids.detach(),
              'fit_class_counts': counts.long().detach(), 'fit_sample_count': int(counts.sum()),
