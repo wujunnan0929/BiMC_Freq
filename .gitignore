@@ -18,6 +18,8 @@ docs/*
 !docs/performance_first_research_plan.md
 !docs/prototype_estimator_experiments.md
 !docs/prototype_completion_experiments.md
+!docs/multilayer_multiattribute_completion_plan.md
+!docs/multilayer_completion_experiments.md
 !docs/competitive_fusion_experiments.md
 !docs/competitive_evidence_diagnostics.md
 shared_dictionary_group_report*

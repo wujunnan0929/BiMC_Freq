@@ -221,6 +221,36 @@ class VisionTransformer(nn.Module):
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
 
+    def forward_selected(self, x: torch.Tensor, layers=(3, 6, 9)):
+        """Return final CLIP output and selected native CLS tokens in one pass.
+
+        Layer numbers are one-based transformer block indices. Intermediate
+        tokens deliberately do not use the final language-alignment projection.
+        The ordinary ``forward`` path is unchanged.
+        """
+        layers = tuple(layers)
+        count = len(self.transformer.resblocks)
+        if (not layers or len(set(layers)) != len(layers)
+                or any(isinstance(i, bool) or not isinstance(i, int)
+                       or not 1 <= i <= count for i in layers)):
+            raise ValueError('Selected ViT layers must be distinct one-based block indices.')
+        x = self.conv1(x)
+        x = x.reshape(x.shape[0], x.shape[1], -1).permute(0, 2, 1)
+        cls = self.class_embedding.to(x.dtype) + torch.zeros(
+            x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device)
+        x = torch.cat((cls, x), dim=1)
+        x = self.ln_pre(x + self.positional_embedding.to(x.dtype))
+        x = x.permute(1, 0, 2)
+        result = {}
+        for index, block in enumerate(self.transformer.resblocks, 1):
+            x = block(x)
+            if index in layers:
+                result['layer_' + str(index)] = x[0].clone()
+        final = self.ln_post(x.permute(1, 0, 2)[:, 0, :])
+        if self.proj is not None:
+            final = final @ self.proj
+        return {'final': final, **result}
+
     # Modified by Torres Yu in Oct 5, 2022
     def forward(self, x: torch.Tensor, all_layer_outputs=False):
         x = self.conv1(x)  # shape = [*, width, grid, grid]
@@ -374,6 +404,12 @@ class CLIP(nn.Module):
 
     def encode_image(self, image):
         return self.visual(image.type(self.dtype))
+
+    def encode_image_layers(self, image, layers=(3, 6, 9)):
+        """Encode selected native ViT CLS features without extra image views."""
+        if not isinstance(self.visual, VisionTransformer):
+            raise ValueError('Selected native layer caching currently requires a ViT backbone.')
+        return self.visual.forward_selected(image.type(self.dtype), layers=layers)
 
     def encode_text(self, text):
         x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
