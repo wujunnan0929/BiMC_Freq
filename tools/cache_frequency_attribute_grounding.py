@@ -2,6 +2,7 @@
 
 Reuses an authenticated base visual cache. Encodes only cleaned static text;
 does not read images, call an LLM, train CLIP, or claim Fourier selectivity.
+Matching complete outputs are verified and reused without loading CLIP.
 """
 import argparse
 import json
@@ -19,11 +20,18 @@ from utils.attribute_grounding import METHODS, build_grounding
 from utils.frequency_attributes import BANDS, PATTERNS, build_frequency_manifest
 
 
+SOURCE_FILES = ('tools/cache_frequency_attribute_grounding.py','utils/frequency_attributes.py',
+                'utils/frequency_descriptions.py','utils/attribute_grounding.py',
+                'tools/cache_attribute_grounding.py','models/clip/model.py',
+                'models/clip/clip.py','models/clip/simple_tokenizer.py','models/bimc.py')
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cache',required=True)
     parser.add_argument('--descriptions',default='description/cub200_frequency_descriptions_deepseek.json')
-    parser.add_argument('--output',required=True)
+    parser.add_argument('--output',required=True,
+                        help='New .npz path, or a matching complete cache to verify and reuse.')
     parser.add_argument('--sentences-per-band',type=int,default=2)
     parser.add_argument('--method',choices=METHODS,default='attention_value')
     parser.add_argument('--topq',type=int,default=50)
@@ -64,6 +72,53 @@ def metadata_for(source, selection, audit, description_sha):
         'frequency_semantics':'spatial_scale_text_hypothesis_not_measured_spectral_band'}
 
 
+def existing_output(path):
+    """Refuse partial/in-progress outputs; never remove or overwrite them."""
+    paths = output_paths(path)
+    temporary = [p.with_suffix(p.suffix+'.tmp') for p in paths]
+    pending = [str(p) for p in temporary if p.exists()]
+    if pending:
+        raise ValueError('Temporary frequency cache files exist: '+', '.join(pending)+
+                         '. Use a fresh --output to build a separate cache.')
+    if not any(p.exists() for p in paths):
+        return False
+    missing = [str(p) for p in paths if not p.is_file()]
+    if missing:
+        raise ValueError('Incomplete frequency cache; missing regular files: '+', '.join(missing)+
+                         '. Use a fresh --output; existing files are retained.')
+    return True
+
+
+def reuse_existing(args, source, selection, description_sha):
+    """Bind existing arrays to this request before skipping text encoding.
+
+    The launcher hash is deliberately excluded: this resume-only change must
+    accept caches built by the previous launcher. Extraction dependencies,
+    the full selected text manifest, settings, inputs and certificates must
+    still match. The original cache provenance is never rewritten.
+    """
+    try:
+        _,metadata = load_grounding(args.output,source)
+        differences = []
+        for key,expected in (('format',FREQUENCY_FORMAT),('method',args.method),
+                             ('topq',args.topq),('description_sha256',description_sha),
+                             ('frequency_manifest',selection)):
+            if metadata.get(key) != expected:
+                differences.append(key)
+        recorded = metadata.get('source_files_sha256',{})
+        for name in SOURCE_FILES:
+            if name != 'tools/cache_frequency_attribute_grounding.py' and recorded.get(name) != sha256(ROOT/name):
+                differences.append('extraction source '+name)
+        if differences:
+            raise ValueError('request differs in '+', '.join(differences))
+    except (OSError,ValueError,RuntimeError,KeyError,TypeError) as error:
+        raise ValueError('Existing frequency cache cannot be reused: '+str(error)+
+                         '. Use a fresh --output; existing files are retained.') from error
+    print('Reusing verified frequency attribute cache:',Path(args.output).resolve())
+    print('Available groups:',metadata['grounding_manifest']['group_available_counts'])
+    print('CLIP loading and text encoding skipped. Continue with run_attribute_transfer_experiments.py.')
+
+
 def main(argv=None):
     args = parse_args(argv)
     if args.dry_run:
@@ -71,14 +126,17 @@ def main(argv=None):
             'frequency_semantics':'text_scale_hypothesis'},indent=2))
         return 0
     try:
-        if any(p.exists() or p.with_suffix(p.suffix+'.tmp').exists() for p in output_paths(args.output)):
-            raise FileExistsError('Frequency sidecar exists; use a fresh --output.')
+        existing = existing_output(args.output)
         from tools.cache_multilayer_base_features import load_cache
         _,source = load_cache(args.cache,require_complete=True)
         description_path = Path(args.descriptions)
         payload = json.loads(description_path.read_text(encoding='utf-8'))
         # Fail malformed text before loading weights. No image-guided filtering.
-        build_frequency_manifest(payload,source['base_class_names'],args.sentences_per_band)
+        selection = build_frequency_manifest(payload,source['base_class_names'],args.sentences_per_band)
+        description_sha = sha256(description_path)
+        if existing:
+            reuse_existing(args,source,selection,description_sha)
+            return 0
         from yacs.config import CfgNode
         from models.bimc import load_clip_to_cpu
         from models.clip import clip
@@ -91,13 +149,9 @@ def main(argv=None):
         arrays,selection,audit = build(payload,source,model,clip.tokenize,clip._tokenizer,
             sentences_per_band=args.sentences_per_band,method=args.method,
             topq=args.topq,batch_size=args.batch_size)
-        metadata = metadata_for(source,selection,audit,sha256(description_path))
-        sources = ('tools/cache_frequency_attribute_grounding.py','utils/frequency_attributes.py',
-                   'utils/frequency_descriptions.py','utils/attribute_grounding.py',
-                   'tools/cache_attribute_grounding.py','models/clip/model.py',
-                   'models/clip/clip.py','models/clip/simple_tokenizer.py','models/bimc.py')
+        metadata = metadata_for(source,selection,audit,description_sha)
         metadata.update(description_path=str(description_path.resolve()),
-            source_files_sha256={name:sha256(ROOT/name) for name in sources},
+            source_files_sha256={name:sha256(ROOT/name) for name in SOURCE_FILES},
             wall_seconds=time.perf_counter()-started)
         write_grounding(args.output,arrays,metadata)
         load_grounding(args.output,source)

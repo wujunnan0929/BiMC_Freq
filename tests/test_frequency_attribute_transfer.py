@@ -160,9 +160,63 @@ class FrequencyAttributeTransferTest(unittest.TestCase):
             _,metadata=cache.load_grounding(target,source)
             self.assertEqual(metadata['image_forward_count'],0)
             self.assertEqual(metadata['description_sha256'],cache.sha256(source_text))
-            with contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(cache.main(['--cache',str(visual),'--descriptions',str(source_text),
-                                            '--output',str(target),'--device','cpu']),2)
+            arguments=['--cache',str(visual),'--descriptions',str(source_text),
+                       '--output',str(target),'--device','cpu','--topq','3']
+            stamp={p:(p.stat().st_mtime_ns,p.read_bytes()) for p in cache.output_paths(target)}
+            with patch('models.bimc.load_clip_to_cpu',side_effect=AssertionError('Resume must not load CLIP')), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(cache.main(arguments),0)
+            self.assertIn('Reusing verified',output.getvalue())
+            self.assertEqual(stamp,{p:(p.stat().st_mtime_ns,p.read_bytes()) for p in cache.output_paths(target)})
+
+            # Caches created before the resume-only launcher change remain valid.
+            saved,metadata=cache.load_grounding(target,source)
+            metadata['source_files_sha256']['tools/cache_frequency_attribute_grounding.py']='previous-launcher-sha'
+            cache.write_grounding(target,saved,metadata,overwrite=True)
+            stamp={p:(p.stat().st_mtime_ns,p.read_bytes()) for p in cache.output_paths(target)}
+            with patch('models.bimc.load_clip_to_cpu',side_effect=AssertionError('Resume must not load CLIP')), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cache.main(arguments),0)
+            for extra,reason in ((['--topq','4'],'topq'),(['--method','deletion'],'method'),
+                                 (['--sentences-per-band','1'],'frequency_manifest')):
+                with patch('models.bimc.load_clip_to_cpu',side_effect=AssertionError('Mismatch must not load CLIP')), \
+                        contextlib.redirect_stderr(io.StringIO()) as error:
+                    self.assertEqual(cache.main(arguments+extra),2)
+                self.assertIn(reason,error.getvalue())
+            self.assertEqual(stamp,{p:(p.stat().st_mtime_ns,p.read_bytes()) for p in cache.output_paths(target)})
+
+            # Even unchanged selected sentences require the same source-file SHA.
+            text_bytes=source_text.read_bytes()
+            source_text.write_bytes(text_bytes+b'\n')
+            with contextlib.redirect_stderr(io.StringIO()) as error:
+                self.assertEqual(cache.main(arguments),2)
+            self.assertIn('description_sha256',error.getvalue())
+            source_text.write_bytes(text_bytes)
+            original_sha=cache.sha256
+            def changed_source(path):
+                return 'changed-extractor' if Path(path)==cache.ROOT/'utils/frequency_attributes.py' else original_sha(path)
+            with patch.object(cache,'sha256',side_effect=changed_source), \
+                    contextlib.redirect_stderr(io.StringIO()) as error:
+                self.assertEqual(cache.main(arguments),2)
+            self.assertIn('extraction source utils/frequency_attributes.py',error.getvalue())
+            target.write_bytes(target.read_bytes()+b'corrupt')
+            with contextlib.redirect_stderr(io.StringIO()) as error:
+                self.assertEqual(cache.main(arguments),2)
+            self.assertIn('checksum',error.getvalue())
+
+    def test_partial_or_temporary_outputs_report_files_without_overwriting(self):
+        with artifact_directory() as folder:
+            target=folder/'partial.npz'
+            self.assertFalse(cache.existing_output(target))
+            target.write_bytes(b'partial')
+            with self.assertRaisesRegex(ValueError,'Incomplete.*partial.json'):
+                cache.existing_output(target)
+            self.assertEqual(target.read_bytes(),b'partial')
+            temporary=target.with_suffix('.npz.tmp')
+            temporary.write_bytes(b'writing')
+            with self.assertRaisesRegex(ValueError,'Temporary.*partial.npz.tmp'):
+                cache.existing_output(target)
+            self.assertEqual(temporary.read_bytes(),b'writing')
 
     def test_real_16_run_matrix_packages_inner_replay_and_resumes(self):
         with artifact_directory() as folder:

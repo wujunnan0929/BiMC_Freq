@@ -137,8 +137,17 @@ python -u tools/run_attribute_transfer_experiments.py \
 ```
 
 缓存阶段只跑文本编码，不需要重新编码图像；实验阶段可在 CPU 上复用全部缓存。
+重复执行缓存命令时，会校验 `.npz`、`.json`、`.support.json` 三个文件及校验和，
+并核对视觉缓存、描述文件、选句结果、method/topq 和特征提取依赖源码。
+完整且匹配时输出 `Reusing verified frequency attribute cache`，直接跳过 CLIP 加载和文本编码。
+仅启动脚本的复用逻辑变更不影响旧缓存；原缓存的 provenance 不重写。
+若存在 `.tmp`、缺少附属文件、校验失败或请求不匹配，会指出原因。
+此时可设置新路径重新生成，例如 `export GROUNDING="$STUDY/cache/frequency_attributes_v2.npz"`，
+然后重新执行缓存命令和实验命令，不需要删除旧文件。
 去掉第二条命令的 `--execute` 可查看 48 组计划，不读缓存、不加载 torch。
 匹配输入、配置和源码的输出可续跑；改变源码/配置/文本后必须使用新目录。
+实验目录的源码指纹包括缓存启动脚本；更新本修复后，若旧实验目录已经启动过，
+请换新的实验目录和 ZIP 名称（例如 `development_resume_fix` 和 `frequency_attribute_analysis_resume_fix.zip`）。
 ZIP 不覆盖已有文件。若只重打包，使用新的 ZIP 名称：
 
 ```bash
