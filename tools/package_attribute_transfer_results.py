@@ -26,6 +26,8 @@ ADDITIONAL_JSON = {'grounding_metadata.json', 'grounding_manifest.json',
 
 
 def _allowed(relative):
+    if relative.name == 'inner_scores.npz':
+        return common._allowed(relative.with_name('predictions.npz'))
     if relative.name in ADDITIONAL_JSON:
         # Reuse common sensitive-name and parent-directory checks by replacing
         # only the allowed basename with another known analysis artifact.
@@ -64,6 +66,12 @@ def _audit(root, summary, files):
     audit = common._audit(root, summary, files)
     errors, missing = audit['errors'], audit['missing_artifacts']
     paths = {path.relative_to(root).as_posix() for path in files}
+    if summary.get('attribute_family') == 'frequency':
+        for run in summary.get('runs',[]):
+            if run.get('status') in ('completed','skipped') and run.get('variant','').endswith('__a_inner'):
+                expected = run['output_dir']+'/inner_scores.npz'
+                if expected not in paths:
+                    missing.append(expected)
     documents = {}
     for name in ROOT_REQUIRED:
         if name not in paths:

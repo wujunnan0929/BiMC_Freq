@@ -24,14 +24,15 @@ ATTENTION_NOTE = ('Last text attention/value path projected through attention.ou
                   'residual/MLP paths are not attributed. A heuristic, not exact FDR reproduction.')
 
 
-def keyword_spans(text, class_name, group, tokenizer):
+def keyword_spans(text, class_name, group, tokenizer, patterns=None):
     """Locate lexical content keywords, excluding every full class-name span.
 
     BPE positions include the leading SOS at position zero. An ambiguous prefix
     segmentation is rejected rather than silently grounding a different token.
     The selected keyword is never the full sentence or the species name.
     """
-    if not isinstance(text, str) or not text.strip() or group not in GROUPS:
+    patterns = PATTERNS if patterns is None else patterns
+    if not isinstance(text, str) or not text.strip() or group not in patterns:
         raise ValueError('A nonempty attribute sentence and known group are required.')
     words = normalize_name(class_name).split()
     if not words:
@@ -40,7 +41,7 @@ def keyword_spans(text, class_name, group, tokenizer):
     excluded = [(m.start(), m.end()) for m in class_pattern.finditer(text)]
     encoded = list(tokenizer.encode(text))
     accepted, rejected = [], []
-    for match in PATTERNS[group].finditer(text):
+    for match in patterns[group].finditer(text):
         start, end = match.span()
         if any(start < b and end > a for a, b in excluded):
             rejected.append({'keyword':match.group(), 'char_span':[start,end], 'reason':'class_name'})
@@ -124,7 +125,8 @@ def text_token_contributions(model, tokens):
 
 
 def build_grounding(manifest, clip_model, tokenize, tokenizer, topq=50,
-                    method='attention_value', batch_size=128):
+                    method='attention_value', batch_size=128, *, group_names=GROUPS,
+                    patterns=None, max_sentences=2, include_text=False):
     """Return numerical channel scores/masks and a JSON-serializable audit.
 
     Every available group averages its valid actual sentence/keyword scores.
@@ -142,8 +144,13 @@ def build_grounding(manifest, clip_model, tokenize, tokenizer, topq=50,
         raise ValueError('Unknown grounding method.')
     if clip_model.training:
         raise ValueError('Grounding requires an evaluation-mode encoder.')
-    if not isinstance(manifest,dict) or manifest.get('group_order') != list(GROUPS):
-        raise ValueError('Grounding requires the fixed four-group attribute manifest.')
+    group_names = tuple(group_names)
+    if (not group_names or len(set(group_names)) != len(group_names)
+            or any(not isinstance(g,str) or not g for g in group_names)
+            or not isinstance(manifest,dict) or manifest.get('group_order') != list(group_names)):
+        raise ValueError('Grounding requires a matching ordered attribute manifest.')
+    if isinstance(max_sentences,bool) or not isinstance(max_sentences,int) or max_sentences < 1:
+        raise ValueError('max_sentences must be positive.')
     classes = manifest.get('classes')
     if (not isinstance(classes,list) or not classes
             or any(not isinstance(c,dict) or not isinstance(c.get('name'),str) for c in classes)):
@@ -152,19 +159,20 @@ def build_grounding(manifest, clip_model, tokenize, tokenizer, topq=50,
     if len(set(names)) != len(names):
         raise ValueError('Attribute class names must be unique.')
     dimension = int(clip_model.text_projection.shape[1])
-    scores = np.zeros((len(classes),len(GROUPS),dimension),dtype=np.float32)
+    scores = np.zeros((len(classes),len(group_names),dimension),dtype=np.float32)
+    text_sum = np.zeros_like(scores)
     available = np.zeros(scores.shape[:2],dtype=np.bool_)
     rows, records = [], []
     for c, record in enumerate(classes):
         groups = record.get('groups')
-        if not isinstance(groups,dict) or set(groups) != set(GROUPS):
-            raise ValueError('Class must contain all four attribute group lists.')
+        if not isinstance(groups,dict) or set(groups) != set(group_names):
+            raise ValueError('Class must contain all declared attribute group lists.')
         class_record = {'name':record['name'],'groups':{}}
         records.append(class_record)
-        for g, group in enumerate(GROUPS):
+        for g, group in enumerate(group_names):
             sentences = groups[group]
-            if not isinstance(sentences,list) or len(sentences) > 2:
-                raise ValueError('At most two recorded sentences per attribute group are supported.')
+            if not isinstance(sentences,list) or len(sentences) > max_sentences:
+                raise ValueError('Too many recorded sentences per attribute group.')
             audit = {'available':False,'reason':'unknown_attribute' if not sentences else 'no_groundable_keywords',
                      'sentences':[],'keyword_count':0}
             class_record['groups'][group] = audit
@@ -172,7 +180,7 @@ def build_grounding(manifest, clip_model, tokenize, tokenizer, topq=50,
                 if not isinstance(sentence,dict) or not isinstance(sentence.get('text'),str):
                     raise ValueError('Attribute provenance sentence must contain text.')
                 text = sentence['text']
-                keywords, rejected = keyword_spans(text,record['name'],group,tokenizer)
+                keywords, rejected = keyword_spans(text,record['name'],group,tokenizer,patterns)
                 detail = {'text':text,'source_index':sentence.get('source_index'),
                           'keywords':keywords,'rejected_keywords':rejected,
                           'used':False,'reason':'pending' if keywords else 'no_content_keyword'}
@@ -192,7 +200,7 @@ def build_grounding(manifest, clip_model, tokenize, tokenizer, topq=50,
                 if eos != len(original)+1 or token_row[1:eos].tolist() != list(original):
                     raise ValueError('Tokenizer/BPE provenance disagrees with encoded CLIP tokens.')
             if method == 'attention_value':
-                _, contribution = text_token_contributions(clip_model,tokens)
+                encoded, contribution = text_token_contributions(clip_model,tokens)
                 eos = tokens.argmax(-1)
                 valid = torch.arange(tokens.shape[1],device=device)[None] <= eos[:,None]
                 contribution = contribution.masked_fill(~valid[...,None], -torch.inf)
@@ -203,7 +211,8 @@ def build_grounding(manifest, clip_model, tokenize, tokenizer, topq=50,
                     vectors.append(proportions[index,positions].mean(0))
                 vectors = torch.stack(vectors)
             else:
-                original = F.normalize(clip_model.encode_text(tokens).float(),dim=-1)
+                encoded = clip_model.encode_text(tokens)
+                original = F.normalize(encoded.float(),dim=-1)
                 edited = []
                 for row in batch:
                     text = row['text']
@@ -216,32 +225,46 @@ def build_grounding(manifest, clip_model, tokenize, tokenizer, topq=50,
             if not torch.isfinite(vectors).all():
                 raise ValueError('Grounding produced non-finite channel scores.')
             vectors = vectors.cpu().numpy().astype(np.float32)
-            for row,vector in zip(batch,vectors):
+            embeddings = F.normalize(encoded.float(),dim=-1).cpu().numpy()
+            for row,vector,embedding in zip(batch,vectors,embeddings):
                 scale = float(vector.sum())
                 if scale <= 1e-20:
                     row['audit']['reason'] = 'zero_grounding_response'
                     continue
                 c,g = row['class'],row['group']
                 scores[c,g] += vector/scale
+                text_sum[c,g] += embedding
                 counts[c,g] += 1
                 row['audit'].update(used=True,reason=None)
     masks = np.zeros_like(scores,dtype=np.bool_)
     for c in range(len(classes)):
-        for g,group in enumerate(GROUPS):
+        for g,group in enumerate(group_names):
             audit = records[c]['groups'][group]
             if counts[c,g]:
+                if include_text and np.linalg.norm(text_sum[c,g]) <= 1e-12:
+                    scores[c,g] = 0
+                    audit.update(reason='cancelled_text_mean')
+                    for sentence in audit['sentences']:
+                        if sentence['used']:
+                            sentence.update(used=False,reason='cancelled_text_mean')
+                    continue
                 scores[c,g] /= counts[c,g]
                 # Stable tie breaking: lower channel index first.
                 indices = np.argsort(-scores[c,g],kind='stable')[:min(topq,dimension)]
                 masks[c,g,indices] = True
                 available[c,g] = True
                 audit.update(available=True,reason=None,keyword_count=sum(len(s['keywords']) for s in audit['sentences'] if s['used']))
-    audit = {'schema_version':1,'group_order':list(GROUPS),'method':method,
+    audit = {'schema_version':1,'group_order':list(group_names),'method':method,
              'topq':topq,'effective_topq':min(topq,dimension),'classes':records,
              'class_count':len(classes),'feature_dimension':dimension,
-             'group_available_counts':dict(zip(GROUPS,available.sum(0).tolist())),
+             'group_available_counts':dict(zip(group_names,available.sum(0).tolist())),
              'no_image_encoding':True,'new_gradient_training_performed':False,
              'grounding_note':ATTENTION_NOTE if method == 'attention_value' else
                 'Absolute final unit text-feature change after deleting actual content keywords; no gradient optimization.',
              'coverage_note':'All original valid attribute slots are considered; no ordinary-budget clipping or fabricated fillers.'}
-    return {'channel_score':scores,'channel_mask':masks,'group_available':available},audit
+    result = {'channel_score':scores,'channel_mask':masks,'group_available':available}
+    if include_text:
+        result['attribute_text'] = np.where(available[...,None],
+            text_sum/np.maximum(np.linalg.norm(text_sum,axis=-1,keepdims=True),1e-12),0).astype(np.float32)
+        audit['text_pooling'] = 'unit_mean_of_exactly_used_grounding_sentences'
+    return result,audit

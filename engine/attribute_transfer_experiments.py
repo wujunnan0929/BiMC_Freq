@@ -19,10 +19,13 @@ METHODS = ('bimc', 'single_two_text', 'whole_transfer', 'random_mask',
            'shuffled_mask', 'semantic_mask', 'semantic_reliable')
 
 
-def experiment_variants():
+def experiment_variants(attribute_family='appearance'):
+    if attribute_family not in ('appearance','frequency'):
+        raise ValueError('Unknown attribute family.')
+    methods = METHODS if attribute_family=='appearance' else (*METHODS,'frequency_pooled')
     return [{'name': method+'__'+offset, 'method': method, 'offset_mode': offset,
              'stage': 'transfer', 'kind': 'attribute_transfer'}
-            for method in METHODS for offset in ('none', 'a_inner')]
+            for method in methods for offset in ('none', 'a_inner')]
 
 
 def _runtime():
@@ -100,6 +103,10 @@ def inner_protocol(arrays, cfg, parent, sequences):
 
 
 def attribute_text(arrays, grounding):
+    if 'attribute_text' in grounding:
+        # The frequency sidecar encodes exactly the accepted static sentences.
+        # Do not pool stale shape/part/color/pattern embeddings from the cache.
+        return grounding['attribute_text'],grounding['group_available'].bool()
     text, available = base._pool(arrays['attr_text'], arrays['attr_mask'])
     available = available & grounding['group_available'].bool()
     return text, available
@@ -110,11 +117,21 @@ def fit_method(method, arrays, grounding, cfg, protocol, topk, temperature):
         return {'kind':'identity'}
     if method == 'single_two_text':
         return base.fit_variant({'kind':'legacy','mode':'pooled','rank':16}, arrays, cfg, protocol, {})
+    if method == 'frequency_pooled':
+        if 'attribute_text' not in grounding:
+            raise ValueError('frequency_pooled requires the three-band text sidecar.')
+        text, available = attribute_text(arrays,grounding)
+        pooled = F.normalize((text*available[...,None]).sum(1),dim=-1)
+        structured = arrays['structured_text'].clone()
+        structured[:,0] = pooled
+        return base.fit_variant({'kind':'legacy','mode':'pooled','rank':16},
+            {**arrays,'structured_text':structured},cfg,protocol,{})
     from models.attribute_transfer import fit_attribute_transfer
     rows, ids = protocol['fitting_indices'], protocol['pseudo_base_class_ids']
     text, available = attribute_text(arrays, grounding)
     state = fit_attribute_transfer(arrays['final'][rows], arrays['labels'][rows],
-        text[ids], available[ids], ids, topk=topk, temperature=temperature)
+        text[ids], available[ids], ids, topk=topk, temperature=temperature,
+        group_names=('low','middle','high') if 'attribute_text' in grounding else GROUPS)
     return {'kind':'transfer','state':state,'text':text,'available':available,
             'masks':grounding['channel_mask'].bool(),'method':method}
 
@@ -311,6 +328,8 @@ def teacher_diagnostics(arrays, protocol, records, completions, grid):
 
 def _source_hashes():
     names = ('engine/attribute_transfer_experiments.py','models/attribute_transfer.py',
+        'utils/frequency_attributes.py','utils/frequency_descriptions.py',
+        'tools/cache_frequency_attribute_grounding.py',
         'utils/attribute_grounding.py','tools/cache_attribute_grounding.py',
         'tools/run_attribute_transfer_experiments.py','tools/package_attribute_transfer_results.py',
         'engine/multilayer_completion_experiments.py','models/prototype_completion.py',
@@ -322,15 +341,17 @@ def _source_hashes():
     return {name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in names}
 
 
-def _summary(root, rows, fit_seeds, family):
+def _summary(root, rows, fit_seeds, family, attribute_family='appearance'):
     expected = [{'fit_seed':seed,'stage':'transfer','variant':definition['name'],
                  'output_dir':f"seed_{seed}/transfer/{definition['name']}"}
-                for seed in fit_seeds for definition in experiment_variants()]
+                for seed in fit_seeds for definition in experiment_variants(attribute_family)]
     ordered = sorted(rows.values(),key=lambda r:(r['fit_seed'],r['variant']))
     success = [r for r in ordered if r['status'] in ('completed','skipped')]
     started = {(r['fit_seed'],r['variant']) for r in ordered}
     pending = [r for r in expected if (r['fit_seed'],r['variant']) not in started]
     result = {'schema_version':1,'method':FORMAT,'family_fingerprint':family,
+        'attribute_family':attribute_family,
+        'group_order':['low','middle','high'] if attribute_family=='frequency' else list(GROUPS),
         'data_source':'base_training_only','benchmark_evaluation_performed':False,
         'gradient_training_performed':False,'fit_seeds':list(fit_seeds),'requested_stages':['transfer'],
         'planned_runs':len(expected),'expected_runs':expected,'completed_runs':len(success),
@@ -346,11 +367,14 @@ def _summary(root, rows, fit_seeds, family):
     result['aggregates'] = {name:{'n':len(values),**{k:sum(v[k] for v in values)/len(values) for k in keys}}
                             for name,values in aggregate.items()}
     lookup = {(r['fit_seed'],r['variant']):r for r in success}
-    pairs = [(d['name'],'single_two_text__'+d['offset_mode']) for d in experiment_variants()]
-    pairs += [(m+'__a_inner',m+'__none') for m in METHODS]
+    definitions = experiment_variants(attribute_family)
+    pairs = [(d['name'],'single_two_text__'+d['offset_mode']) for d in definitions]
+    pairs += [(d['method']+'__a_inner',d['method']+'__none') for d in definitions if d['offset_mode']=='none']
     pairs += [('semantic_mask__'+o,'random_mask__'+o) for o in ('none','a_inner')]
     pairs += [('semantic_mask__'+o,'shuffled_mask__'+o) for o in ('none','a_inner')]
     pairs += [('semantic_reliable__'+o,'semantic_mask__'+o) for o in ('none','a_inner')]
+    if attribute_family=='frequency':
+        pairs += [('semantic_mask__'+o,'frequency_pooled__'+o) for o in ('none','a_inner')]
     result['paired_comparisons'] = {}
     for method,control in pairs:
         values = {str(seed):{k:lookup[seed,method]['summary'][k]-lookup[seed,control]['summary'][k]
@@ -379,7 +403,13 @@ def _summary(root, rows, fit_seeds, family):
         'matched random/shuffled masks and paired offset-only controls. Zero fallback is not evidence for attributes.',
         '', 'Keyword attention-value channel grounding is a projected attention-path heuristic. '
         'The learned last MLP and residual paths are not attributed to keywords. '
-        'Four pooled attribute groups and our residual recomposition differ from original FDR.']
+        'Grouped attributes and our residual recomposition differ from original FDR.']
+    if attribute_family=='frequency':
+        lines += ['', 'Attributes: low/middle/high semantic spatial scale. Text and masks come from '
+            'the same filtered sentences, with class names anonymized. No Fourier image features '
+            'or patch spectra are used; frequency selectivity is unverified.',
+            'frequency_pooled uses the same frequency text without channel decomposition. '
+            'single_two_text retains the previous baseline and its original text budget.']
     (root/'analysis.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
     return result
 
@@ -391,6 +421,8 @@ def _run_variant(folder, definition, context, arrays, grounding, options, family
     required = ('config.json','run_spec.json','run_state.json','calibration.json','protocol.json',
         'metrics.json','stage_metrics.json','predictions.npz','diagnostics.json',
         'teacher_diagnostics.json','offset_fit.json')
+    if options['attribute_family']=='frequency' and definition['offset_mode']=='a_inner':
+        required += ('inner_scores.npz',)
     if any(folder.iterdir()):
         if not (folder/'run_spec.json').is_file() or not (folder/'run_state.json').is_file():
             raise ValueError('Refusing unmanaged nonempty run directory: '+str(folder))
@@ -425,8 +457,15 @@ def _run_variant(folder, definition, context, arrays, grounding, options, family
                                       options['topk'],options['temperature'])
                 innerbank, _, _ = _score_bank(innerfit,arrays,context['cfg'],context['inner_protocol'],context['inner_records'],grid)
                 offsets, search = fit_offsets(innerbank,grid,options['offset_grid'],options['maximum_group_drop_pp'])
-                context['offsets'][method] = offsets,search
-            offsets, search = context['offsets'][method]
+                context['offsets'][method] = offsets,search,innerbank
+            offsets, search, innerbank = context['offsets'][method]
+            if options['attribute_family']=='frequency':
+                inner_saved = {k:v for k,v in innerbank.items() if k not in ('banks','boundaries')}
+                inner_saved.update(blend=np.asarray(grid),boundaries=np.asarray(innerbank['boundaries']))
+                for key in ('best_old_class','best_novel_class','best_old_logscore','best_novel_logscore'):
+                    inner_saved[key] = np.stack([innerbank['banks'][b][key] for b in grid])
+                with (folder/'inner_scores.npz').open('wb') as handle:
+                    np.savez_compressed(handle,**inner_saved)
         else:
             offsets, search = {b:0. for b in grid}, []
         _write(folder/'offset_fit.json',{'data_source':'outer_A_fitting_rows_only',
@@ -451,7 +490,9 @@ def _run_variant(folder, definition, context, arrays, grounding, options, family
         if method not in context['teachers']:
             context['teachers'][method] = teacher_diagnostics(arrays,context['protocol'],context['records'],completions,grid)
         _write(folder/'teacher_diagnostics.json',context['teachers'][method])
-        diagnostics = {'method':method,'grounding_source':'frozen_text_attention_value_or_deletion_sidecar',
+        diagnostics = {'method':method,'attribute_family':options['attribute_family'],
+            'grounding_source':'frozen_text_attention_value_or_deletion_sidecar',
+            'visual_frequency_grounding_performed':False,
             'fit_class_ids':context['protocol']['pseudo_base_class_ids'],
             'fitting_indices_sha256':_digest(context['protocol']['fitting_indices']),
             'support_only_completion':True,'new_image_forward_passes':0,
@@ -483,8 +524,13 @@ def _run_variant(folder, definition, context, arrays, grounding, options, family
 
 def run_experiments(cache_path, grounding_path, output_root, *, fit_seeds=(2,3,4),
         sequences=20, inner_sequences=5, device='cpu', threads=1,
-        blend_grid=(0.,.05,.1,.25,.5,1.), offset_grid=(-.1,-.05,-.02,0.,.02,.05,.1),
-        maximum_group_drop_pp=.2, topk=5, temperature=16., resume=True):
+        blend_grid=(0.,.05,.1,.25,.5,1.), offset_grid=None,
+        maximum_group_drop_pp=.2, topk=5, temperature=16., resume=True,
+        attribute_family='appearance'):
+    experiment_variants(attribute_family)  # Validate before loading numerical dependencies.
+    if offset_grid is None:
+        offset_grid = ((-.005,-.002,-.001,-.0005,0.,.0005,.001,.002,.005)
+                       if attribute_family=='frequency' else (-.1,-.05,-.02,0.,.02,.05,.1))
     if not fit_seeds or len(set(fit_seeds))!=len(fit_seeds) or any(isinstance(s,bool) or not isinstance(s,int) or s<1 for s in fit_seeds):
         raise ValueError('fit_seeds must be distinct positive integers.')
     if any(isinstance(v,bool) or not isinstance(v,int) or v<1 for v in (sequences,inner_sequences,threads,topk)):
@@ -505,11 +551,14 @@ def run_experiments(cache_path, grounding_path, output_root, *, fit_seeds=(2,3,4
     from engine.completion_calibration import completion_protocol
     cached,metadata = load_cache(cache_path,require_complete=True)
     grounded,groundmeta = load_grounding(grounding_path,source_metadata=metadata)
+    expected_groups = ['low','middle','high'] if attribute_family=='frequency' else list(GROUPS)
+    if groundmeta['group_order'] != expected_groups:
+        raise ValueError('Grounding family differs from --attribute-family.')
     source = _source_hashes()
     options = {'fit_seeds':list(fit_seeds),'sequences':sequences,'inner_sequences':inner_sequences,
         'device':device,'threads':threads,'blend_grid':sorted(float(v) for v in blend_grid),
         'offset_grid':sorted(float(v) for v in offset_grid),'maximum_group_drop_pp':maximum_group_drop_pp,
-        'topk':topk,'temperature':temperature}
+        'topk':topk,'temperature':temperature,'attribute_family':attribute_family}
     grounding_sha = groundmeta.get('grounding_sha256',groundmeta.get('cache_sha256'))
     family = _digest({'format':FORMAT,'cache_sha256':metadata['cache_sha256'],
         'metadata_sha256':metadata['metadata_payload_sha256'],'grounding_sha256':grounding_sha,
@@ -526,6 +575,7 @@ def run_experiments(cache_path, grounding_path, output_root, *, fit_seeds=(2,3,4
             raise ValueError('Existing provenance differs; use a new output root.')
     root.mkdir(parents=True,exist_ok=True)
     _write(root/'input_provenance.json',{'method':FORMAT,'family_fingerprint':family,
+        'attribute_family':attribute_family,'group_order':expected_groups,
         'cache_sha256':metadata['cache_sha256'],'grounding_sha256':grounding_sha,
         'cache_metadata_sha256':metadata['metadata_payload_sha256'],
         'grounding_metadata_sha256':groundmeta['metadata_payload_sha256'],
@@ -542,7 +592,7 @@ def run_experiments(cache_path, grounding_path, output_root, *, fit_seeds=(2,3,4
     arrays = {k:torch.as_tensor(v,device=device) for k,v in cached.items()}
     grounding = {k:torch.as_tensor(v,device=device) for k,v in grounded.items()}
     rows = {(r['fit_seed'],r['variant']):r for r in previous.get('runs',[])}
-    _summary(root,rows,fit_seeds,family)
+    _summary(root,rows,fit_seeds,family,attribute_family)
     old_threads = torch.get_num_threads()
     torch.set_num_threads(threads)
     try:
@@ -553,7 +603,7 @@ def run_experiments(cache_path, grounding_path, output_root, *, fit_seeds=(2,3,4
             context = {'cfg':cfg,'protocol':protocol,'inner_protocol':inner,
                 'records':base.build_records(arrays,cfg,protocol),'inner_records':base.build_records(arrays,cfg,inner),
                 'banks':{},'offsets':{},'teachers':{}}
-            for definition in experiment_variants():
+            for definition in experiment_variants(attribute_family):
                 name = definition['name']
                 relative = f'seed_{seed}/transfer/{name}'
                 record = {'fit_seed':seed,'stage':'transfer','variant':name,'output_dir':relative}
@@ -564,14 +614,14 @@ def run_experiments(cache_path, grounding_path, output_root, *, fit_seeds=(2,3,4
                         selected_blend=metrics['selected_blend'],selected_offset=metrics['selected_offset'],
                         protocol_sha256=metrics['protocol_sha256'],wall_seconds=metrics['wall_seconds'])
                     rows[seed,name] = record
-                    _summary(root,rows,fit_seeds,family)
+                    _summary(root,rows,fit_seeds,family,attribute_family)
                     print(f"{name} fit={seed} {status}: overall={metrics['summary']['accuracy']:.4f} "
                           f"blend={metrics['selected_blend']} offset={metrics['selected_offset']}",flush=True)
                 except Exception as error:
                     record.update(status='failed',error=str(error))
                     rows[seed,name] = record
-                    _summary(root,rows,fit_seeds,family)
+                    _summary(root,rows,fit_seeds,family,attribute_family)
                     raise
-        return _summary(root,rows,fit_seeds,family)
+        return _summary(root,rows,fit_seeds,family,attribute_family)
     finally:
         torch.set_num_threads(old_threads)

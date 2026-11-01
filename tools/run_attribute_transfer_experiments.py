@@ -19,6 +19,8 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cache', required=True, help='Certified complete base visual feature .npz cache.')
     parser.add_argument('--grounding', required=True, help='Matching certified attribute grounding .npz sidecar.')
+    parser.add_argument('--attribute-family', choices=('appearance','frequency'), default='appearance',
+                        help='Frequency uses low/middle/high text from its own certified sidecar.')
     parser.add_argument('--output-root', required=True, help='New or matching resumable study directory.')
     parser.add_argument('--fit-seeds', type=int, nargs='+', default=[2, 3, 4])
     parser.add_argument('--sequences', type=int, default=20)
@@ -27,7 +29,8 @@ def parse_args(argv=None):
     parser.add_argument('--device', choices=('cpu', 'cuda'), default='cpu')
     parser.add_argument('--threads', type=int, default=1)
     parser.add_argument('--blend-grid', type=float, nargs='+', default=[0., .05, .1, .25, .5, 1.])
-    parser.add_argument('--offset-grid', type=float, nargs='+', default=[-.1, -.05, -.02, 0., .02, .05, .1])
+    parser.add_argument('--offset-grid', type=float, nargs='+',
+                        help='Frequency default uses fine offsets from -0.005 to 0.005, including zero.')
     parser.add_argument('--max-group-drop', type=float, default=.2,
                         help='Maximum mean Base/Novel decrease in percentage points.')
     parser.add_argument('--topk', type=int, default=5)
@@ -39,6 +42,9 @@ def parse_args(argv=None):
     parser.add_argument('--package', help='Create a NEW compact analysis .zip after execution.')
     parser.add_argument('--allow-incomplete-package', action='store_true')
     args = parser.parse_args(argv)
+    if args.offset_grid is None:
+        args.offset_grid = ([-.005,-.002,-.001,-.0005,0.,.0005,.001,.002,.005]
+                            if args.attribute_family=='frequency' else [-.1,-.05,-.02,0.,.02,.05,.1])
     if min(args.fit_seeds) < 1 or len(set(args.fit_seeds)) != len(args.fit_seeds):
         parser.error('--fit-seeds must be distinct positive integers.')
     if min(args.sequences, args.inner_sequences, args.threads, args.topk) < 1:
@@ -65,10 +71,11 @@ def parse_args(argv=None):
 
 def build_plan(args):
     from engine.attribute_transfer_experiments import experiment_variants
-    variants = experiment_variants()
+    variants = experiment_variants('frequency') if args.attribute_family=='frequency' else experiment_variants()
     runs = [{'fit_seed':seed, 'stage':'transfer', 'variant':variant['name'],
              'configuration':variant} for seed in args.fit_seeds for variant in variants]
     return {'method':'attribute_transfer_development', 'data_source':'base_training_only',
+            'attribute_family':args.attribute_family,
             'benchmark_evaluation_performed':False,
             'cache':str(Path(args.cache).resolve()), 'grounding':str(Path(args.grounding).resolve()),
             'output_root':str(Path(args.output_root).resolve()), 'fit_seeds':args.fit_seeds,
@@ -103,7 +110,7 @@ def main(argv=None):
             inner_sequences=args.inner_sequences, device=args.device, threads=args.threads,
             blend_grid=tuple(args.blend_grid), offset_grid=tuple(args.offset_grid),
             maximum_group_drop_pp=args.max_group_drop, topk=args.topk,
-            temperature=args.temperature, resume=not args.no_resume)
+            temperature=args.temperature, resume=not args.no_resume,attribute_family=args.attribute_family)
         print('Base-only study summary:', str(Path(args.output_root).resolve()/'summary.json'))
         print('Completed configurations:', summary.get('completed_runs', 'unknown'))
         if args.package:

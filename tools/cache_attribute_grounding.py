@@ -21,6 +21,7 @@ from utils.attribute_descriptions import GROUPS
 from utils.attribute_grounding import METHODS, build_grounding
 
 FORMAT = 'attribute_grounding_v1'
+FREQUENCY_FORMAT = 'frequency_attribute_grounding_v1'
 
 
 def parse_args(argv=None):
@@ -46,15 +47,20 @@ def parse_args(argv=None):
 
 def _validate_arrays(arrays,metadata,source_metadata=None):
     import numpy as np
-    if set(arrays) != {'channel_score','channel_mask','group_available'}:
+    frequency = metadata.get('format') == FREQUENCY_FORMAT
+    group_names = ('low','middle','high') if frequency else GROUPS
+    required = {'channel_score','channel_mask','group_available'}
+    if frequency:
+        required.add('attribute_text')
+    if set(arrays) != required:
         raise ValueError('Grounding has missing or unexpected arrays.')
     score, mask, available = (arrays[k] for k in ('channel_score','channel_mask','group_available'))
     if not all(isinstance(v,np.ndarray) for v in (score,mask,available)):
         raise ValueError('Grounding numerical values must be explicit NumPy arrays.')
     classes = metadata.get('base_class_ids')
     names = metadata.get('base_class_names')
-    if (metadata.get('format') != FORMAT or metadata.get('data_source') != 'base_training_only'
-            or metadata.get('group_order') != list(GROUPS)
+    if (metadata.get('format') not in (FORMAT,FREQUENCY_FORMAT) or metadata.get('data_source') != 'base_training_only'
+            or metadata.get('group_order') != list(group_names)
             or not isinstance(classes,list) or classes != list(range(len(classes))) or not classes
             or not isinstance(names,list) or len(names) != len(classes)
             or any(not isinstance(n,str) or not n for n in names) or len(set(names)) != len(names)):
@@ -64,11 +70,11 @@ def _validate_arrays(arrays,metadata,source_metadata=None):
             or metadata.get('method') not in METHODS or metadata.get('no_image_encoding') is not True
             or metadata.get('new_gradient_training_performed') is not False):
         raise ValueError('Grounding must record positive topq and frozen text-only provenance.')
-    if (score.dtype != np.float32 or score.ndim != 3 or score.shape[:2] != (len(classes),4)
+    if (score.dtype != np.float32 or score.ndim != 3 or score.shape[:2] != (len(classes),len(group_names))
             or score.shape[2] < 1 or mask.shape != score.shape or mask.dtype != np.bool_
             or available.shape != score.shape[:2] or available.dtype != np.bool_
             or not np.isfinite(score).all() or (score < 0).any()):
-        raise ValueError('Expected finite nonnegative float32 [C,4,D] scores and boolean masks.')
+        raise ValueError('Expected finite nonnegative float32 [C,G,D] scores and boolean masks.')
     if (np.any(mask[~available]) or np.any(score[~available] != 0)
             or not np.allclose(score[available].sum(-1),1.,atol=1e-5)
             or not np.all(mask.sum(-1)[available] == min(topq,score.shape[-1]))):
@@ -84,21 +90,38 @@ def _validate_arrays(arrays,metadata,source_metadata=None):
     if (any(not isinstance(r,dict) for r in manifest['classes'])
             or [r.get('name') for r in manifest['classes']] != names
             or manifest.get('method') != metadata['method'] or manifest.get('topq') != topq
-            or manifest.get('group_order') != list(GROUPS)
+            or manifest.get('group_order') != list(group_names)
             or manifest.get('feature_dimension') != score.shape[-1]
             or manifest.get('effective_topq') != min(topq,score.shape[-1])
             or metadata.get('effective_topq',min(topq,score.shape[-1])) != min(topq,score.shape[-1])):
         raise ValueError('Grounding keyword provenance differs from its numerical metadata.')
     for c,record in enumerate(manifest['classes']):
-        if set(record.get('groups',{})) != set(GROUPS):
+        if set(record.get('groups',{})) != set(group_names):
             raise ValueError('Grounding keyword provenance lacks attribute groups.')
-        for g,group in enumerate(GROUPS):
+        for g,group in enumerate(group_names):
             item=record['groups'][group]
             if item.get('available') is not bool(available[c,g]):
                 raise ValueError('Grounding group availability differs from recorded keyword provenance.')
             used=[s for s in item.get('sentences',[]) if s.get('used')]
             if available[c,g] and (not used or not any(s.get('keywords') for s in used)):
                 raise ValueError('Available grounding group has no used content keyword.')
+    if frequency:
+        texts = arrays['attribute_text']
+        selection = metadata.get('frequency_manifest',{})
+        if (texts.dtype != np.float32 or texts.shape != score.shape or not np.isfinite(texts).all()
+                or np.any(texts[~available] != 0)
+                or not np.allclose(np.linalg.norm(texts[available],axis=-1),1.,atol=1e-5)):
+            raise ValueError('Frequency text must be unit [C,3,D] with exact zero unknowns.')
+        if (not isinstance(metadata.get('description_sha256'),str) or not metadata['description_sha256']
+                or selection.get('group_order') != list(group_names)
+                or [c.get('name') for c in selection.get('classes',[])] != names
+                or manifest.get('text_pooling') != 'unit_mean_of_exactly_used_grounding_sentences'):
+            raise ValueError('Frequency text selection/pooling provenance is missing.')
+        for c,record in enumerate(selection['classes']):
+            for group in group_names:
+                if ([s['text'] for s in record['groups'][group]] !=
+                    [s['text'] for s in manifest['classes'][c]['groups'][group]['sentences']]):
+                    raise ValueError('Frequency selection and grounding sentences disagree.')
     for key in ('source_cache_sha256','source_metadata_sha256','clip_weight_sha256'):
         if not isinstance(metadata.get(key),str) or not metadata[key]:
             raise ValueError('Grounding is missing source identity: '+key)
@@ -112,6 +135,8 @@ def _validate_arrays(arrays,metadata,source_metadata=None):
         expected_dimension=source_metadata.get('feature_dim') or shapes.get('final',[None,None])[-1]
         if expected_dimension is not None and score.shape[-1] != expected_dimension:
             raise ValueError('Grounding dimension differs from the source CLIP feature dimension.')
+        if frequency:
+            return  # Frequency text is authenticated separately, not old four-group text.
         originals=source_metadata.get('attribute_manifest',{}).get('classes',[])
         if len(originals)!=len(classes):
             raise ValueError('Source cache lacks matching attribute provenance.')

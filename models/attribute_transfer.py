@@ -1,6 +1,6 @@
 """Frozen, attribute-scoped prototype transfer inspired by FDR.
 
-This is an explicit four-group residual transfer experiment, not a faithful
+This is an explicit grouped residual transfer experiment, not a faithful
 reimplementation of the FDR paper. A donor bank contains fitting-class means
 and pooled sampling statistics only. Predictions use the current class's
 support, its known text, and a fixed channel mask; no queries are accepted.
@@ -46,7 +46,15 @@ def _binary(value, shape, name, device):
     return result.bool()
 
 
-def _inputs(features, labels, text, available, class_ids):
+def _group_names(names):
+    if (not isinstance(names, (tuple, list)) or not names
+            or any(not isinstance(g, str) or not g for g in names)
+            or len(set(names)) != len(names)):
+        raise ValueError('group_names must contain distinct nonempty strings.')
+    return tuple(names)
+
+
+def _inputs(features, labels, text, available, class_ids, group_names=GROUPS):
     values = _real(features, 'features')
     if values.ndim != 2 or min(values.shape) < 1 or (values.norm(dim=-1) <= EPS).any():
         raise ValueError('features must be a nonzero [samples, dimension] matrix.')
@@ -58,9 +66,9 @@ def _inputs(features, labels, text, available, class_ids):
     if any(not len(g) for g in groups):
         raise ValueError('Each requested class needs at least one sample.')
     texts = _real(text, 'text', values.device)
-    if texts.shape != (len(ids), len(GROUPS), values.shape[1]):
-        raise ValueError('text must have shape [classes, 4, feature_dimension].')
-    mask = _binary(available, (len(ids), len(GROUPS)), 'available', values.device)
+    if texts.shape != (len(ids), len(group_names), values.shape[1]):
+        raise ValueError('text must have shape [classes, groups, feature_dimension].')
+    mask = _binary(available, (len(ids), len(group_names)), 'available', values.device)
     norms = texts.norm(dim=-1)
     if (norms[mask] <= EPS).any():
         raise ValueError('Available attribute text must be nonzero.')
@@ -69,7 +77,8 @@ def _inputs(features, labels, text, available, class_ids):
 
 
 @torch.no_grad()
-def fit_attribute_transfer(features, labels, text, available, class_ids, *, topk=5, temperature=16.):
+def fit_attribute_transfer(features, labels, text, available, class_ids, *, topk=5, temperature=16.,
+                           group_names=GROUPS):
     """Fit an A-only bank; text/availability rows follow explicit class_ids.
 
     Feature rows with labels outside class_ids are excluded from all statistics.
@@ -81,7 +90,8 @@ def fit_attribute_transfer(features, labels, text, available, class_ids, *, topk
     if (isinstance(temperature, bool) or not isinstance(temperature, (float, int))
             or not math.isfinite(temperature) or temperature <= 0):
         raise ValueError('temperature must be a finite positive scalar.')
-    values, _, texts, mask, ids, groups = _inputs(features, labels, text, available, class_ids)
+    group_names = _group_names(group_names)
+    values, _, texts, mask, ids, groups = _inputs(features, labels, text, available, class_ids, group_names)
     means = torch.stack([values[g].mean(0) for g in groups])
     if (means.norm(dim=-1) <= EPS).any():
         raise ValueError('Fitting class means must be nonzero.')
@@ -91,7 +101,7 @@ def fit_attribute_transfer(features, labels, text, available, class_ids, *, topk
     for mean, group in zip(means, groups):
         scatter += ((values[group]-mean)**2).sum(0)
     within = scatter/max(1, degrees)
-    return {'format':FORMAT, 'class_ids':ids.detach().clone(), 'counts':counts,
+    return {'format':FORMAT, 'group_names':list(group_names), 'class_ids':ids.detach().clone(), 'counts':counts,
             'means':means.detach(), 'prototypes':F.normalize(means, dim=-1).detach(),
             'text':texts.detach(), 'available':mask.detach(), 'within_diag':within.detach(),
             'feature_dimension':values.shape[1], 'topk':topk, 'temperature':float(temperature),
@@ -107,6 +117,7 @@ def _state(state, dimension, device):
         raise ValueError('Invalid attribute transfer state format.')
     if state.get('feature_dimension') != dimension:
         raise ValueError('Prediction feature dimension differs from the donor bank.')
+    group_names = _group_names(state.get('group_names', GROUPS))
     ids = _ids(state['class_ids'], 'state class_ids', device)
     if len(ids.unique()) != len(ids):
         raise ValueError('Donor IDs must be distinct.')
@@ -115,11 +126,11 @@ def _state(state, dimension, device):
     if (result['means'].shape != (len(ids),dimension)
             or result['prototypes'].shape != (len(ids),dimension)
             or result['counts'].shape != (len(ids),)
-            or result['text'].shape != (len(ids),4,dimension)
+            or result['text'].shape != (len(ids),len(group_names),dimension)
             or result['within_diag'].shape != (dimension,)
             or (result['counts'] < 1).any() or (result['within_diag'] < 0).any()):
         raise ValueError('The donor bank has inconsistent array shapes or sampling statistics.')
-    result['available'] = _binary(state['available'], (len(ids),4), 'state available', device)
+    result['available'] = _binary(state['available'], (len(ids),len(group_names)), 'state available', device)
     if not torch.allclose(result['prototypes'].norm(dim=-1), torch.ones(len(ids),device=device,dtype=torch.float64), atol=1e-7, rtol=1e-6):
         raise ValueError('Donor prototypes must be unit normalized.')
     if (result['text'].norm(dim=-1)[result['available']] <= EPS).any():
@@ -161,7 +172,8 @@ def complete_attribute_transfer(state, features, labels, text, available, channe
         raise ValueError('reliability and return_diagnostics must be boolean.')
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValueError('seed must be a nonnegative integer.')
-    values, _, texts, active, ids, groups = _inputs(features, labels, text, available, class_ids)
+    group_names = _group_names(state.get('group_names', GROUPS))
+    values, _, texts, active, ids, groups = _inputs(features, labels, text, available, class_ids, group_names)
     masks = _binary(channel_masks, texts.shape, 'channel_masks', values.device)
     bank = _state(state, values.shape[1], values.device)
     output_dtype = torch.as_tensor(features).dtype
@@ -179,8 +191,8 @@ def complete_attribute_transfer(state, features, labels, text, available, channe
             raise ValueError('Support class means must be nonzero.')
         direction = raw/scale
         chosen_masks = masks[row].clone()
-        source_groups = list(range(4))
-        usable = [g for g in range(4) if bool(active[row,g]) and bool(masks[row,g].any())]
+        source_groups = list(range(len(group_names)))
+        usable = [g for g in range(len(group_names)) if bool(active[row,g]) and bool(masks[row,g].any())]
         aliases = {}
         canonical = []
         for g in usable:
@@ -208,10 +220,10 @@ def complete_attribute_transfer(state, features, labels, text, available, channe
         delta = torch.zeros_like(raw)
         hits = torch.zeros_like(raw)
         reports, evidence = [], []
-        for g,name in enumerate(GROUPS):
+        for g,name in enumerate(group_names):
             mask = chosen_masks[g]
             report = {'group':name,'available':bool(active[row,g]),
-                      'mask_source_group':GROUPS[source_groups[g]],
+                      'mask_source_group':group_names[source_groups[g]],
                       'mask_count':int(mask.sum()),'original_mask_count':int(masks[row,g].sum()),
                       'mask_channel_indices':torch.where(mask)[0].cpu().tolist(),
                       'gate':0.,'support_noise':None,'donor_disagreement':None,
@@ -232,7 +244,7 @@ def complete_attribute_transfer(state, features, labels, text, available, channe
                 and torch.equal(bank['available'][:,g],bank['available'][:,old_g])
                 and torch.equal(bank['text'][:,g],bank['text'][:,old_g])), None)
             if duplicate is not None:
-                report.update(reason='duplicate_evidence_merged', duplicate_of=GROUPS[duplicate])
+                report.update(reason='duplicate_evidence_merged', duplicate_of=group_names[duplicate])
                 continue
             target = texts[row,g]*mask
             if target.norm() <= EPS:
@@ -304,7 +316,7 @@ def complete_attribute_transfer(state, features, labels, text, available, channe
             'unshufflable_single_group':mode == 'shuffled' and len(canonical) < 2,
             'groups':reports})
     result = torch.stack(results).to(output_dtype).detach()
-    diagnostics = {'format':FORMAT,'mode':mode,'reliability':reliability,
+    diagnostics = {'format':FORMAT,'group_names':list(group_names),'mode':mode,'reliability':reliability,
                    'reliability_is_heuristic':True,'donor_class_ids':bank['class_ids'].cpu().tolist(),
                    'self_donors_excluded':True,'sampling_count_rule':'actual_support_count_per_class',
                    'overlap_rule':'mean_over_unique_active_masks_per_coordinate',
