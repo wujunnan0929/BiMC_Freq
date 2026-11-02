@@ -85,7 +85,7 @@ def evaluate_candidates(bank, episodes, configs):
     return [np.asarray(o, dtype=np.float64) for o in out]
 
 
-def select(bank, entry, episodes, progress=None, tolerance=None):
+def select(bank, entry, episodes, progress=None, tolerance=None, objective='last'):
     t0 = time.time()
     cands, fallback = expand_grid(entry)
     configs = [c for _, c in cands] + ([fallback] if fallback is not None else [])
@@ -107,7 +107,8 @@ def select(bank, entry, episodes, progress=None, tolerance=None):
     if not feasible:
         best_cfg, best = fallback, None
     else:
-        best = max(feasible, key=lambda i: (round(rows[i]['last'], 9), -i))
+        key = {'last': 'last', 'hm': 'last_hm', 'avg': 'avg'}[objective]
+        best = max(feasible, key=lambda i: (round(rows[i][key], 9), -i))
         best_cfg = cands[best][1]
     report = {
         'name': entry['name'], 'selected_params': rows[best]['params'] if best is not None else 'fallback',
@@ -115,7 +116,7 @@ def select(bank, entry, episodes, progress=None, tolerance=None):
         'fallback_config': fallback,
         'fallback_metrics': None if fb is None else {'last': fb[0], 'last_base': fb[1],
                                                      'last_novel': fb[2], 'avg': fb[3]},
-        'candidates': rows, 'tolerance': tol,
+        'candidates': rows, 'tolerance': tol, 'objective': objective,
         'dev_protocol': {'split_seeds': sorted(set(split_ids.tolist())),
                          'split_mode': episodes[0].meta.get('split_mode', 'random'),
                          'n_episodes': len(episodes),

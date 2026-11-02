@@ -162,3 +162,50 @@ def print_summary(rep):
     print('  D3 stand-alone GDA last-session acc (delta vs CLS):')
     for k, v in rep['D3_gda_last'].items():
         print(f"    {k:22s} {v['last']:.2f} ({v['delta_vs_cls']:+.2f}; splits positive {v['splits_positive']})")
+
+
+def error_concentration(bank, split_seeds=(2, 3, 4), n_sequences=5, shot=None, q=50,
+                        sigmas=(1, 2, 4), split_mode='contiguous', m=8):
+    """Where does a K-shot prototype's error live?
+
+    For every pseudo-novel class, err_j = (p_K[j] - p_all[j])^2, with p_K the unit
+    K-shot prototype and p_all the unit mean of all its training images. For a
+    channel mask g: capture = sum_g err / sum err, coverage = |g| / d,
+    concentration = capture / coverage (1 = no better than random channels).
+    A mask that concentrates the error is a mask worth recomposing.
+    """
+    from .pipeline import EpisodeRunner
+    eps = dev_episodes(bank, split_seeds, n_sequences, shot, split_mode)
+    F, y = bank.feat('train', 'orig'), bank.labels('train')
+    acc = {}
+    for e in eps:
+        r = EpisodeRunner(bank, e)
+        deltas, common = r.freq_deltas(sigmas)
+        lib = kw.build_library(bank, r.base_cls, q=q) if bank.has_keywords() else None
+        for j in range(r.nb, len(r.all_cls)):
+            c = int(r.all_cls[j])
+            oracle = l2n(F[y == c].mean(0))
+            err = (r.raw_proto[j] - oracle) ** 2
+            masks = {}
+            masks['freq_own'] = np.logical_or.reduce([kw.topq_mask(deltas[j, b] - common[b], q) for b in range(len(sigmas))])
+            donors = [np.random.RandomState(c * 31 + b).randint(r.nb) for b in range(len(sigmas))]
+            masks['freq_classperm'] = np.logical_or.reduce([kw.topq_mask(deltas[d, b] - common[b], q) for b, d in enumerate(donors)])
+            masks['freq_base_common'] = kw.topq_mask(np.abs(deltas[:r.nb]).mean((0, 1)), int(masks['freq_own'].sum()))
+            rr = np.random.RandomState(c * 131 + 7)
+            rnd = np.zeros(bank.dim, bool)
+            rnd[rr.choice(bank.dim, int(masks['freq_own'].sum()), replace=False)] = True
+            masks['random_same_size'] = rnd
+            if lib is not None:
+                words = kw.class_keywords(bank, c, lib, m=m)
+                if words:
+                    masks['keyword'] = np.logical_or.reduce([lib.masks[w] for w in words])
+            for k, g in masks.items():
+                cov = g.mean()
+                cap = err[g].sum() / max(err.sum(), 1e-18)
+                acc.setdefault(k, []).append((cap, cov, cap / max(cov, 1e-12)))
+    out = {}
+    for k, v in acc.items():
+        v = np.asarray(v)
+        out[k] = {'capture': float(v[:, 0].mean()), 'coverage': float(v[:, 1].mean()),
+                  'concentration': float(v[:, 2].mean()), 'n': int(len(v))}
+    return out

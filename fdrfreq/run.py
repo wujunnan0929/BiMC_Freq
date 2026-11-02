@@ -81,7 +81,7 @@ def cmd_select(a):
         if 'chain' in entry:
             locked = json.loads((out / f"locked_{entry['chain']}.json").read_text(encoding='utf-8'))
             entry = sel.chain(entry, locked)
-        rep = sel.select(bank, entry, episodes, tolerance=a.tolerance)
+        rep = sel.select(bank, entry, episodes, tolerance=a.tolerance, objective=a.objective)
         lk = sel.lock(rep)
         write_json(out / f'select_{name}.json', rep)
         write_json(out / f'locked_{name}.json', lk)
@@ -311,6 +311,20 @@ def cmd_frontier(a):
     write_json(Path(a.out) / f'frontier_shot{a.shot or bank.inc_shot}.json', {'reference': rb, 'rows': rows})
 
 
+def cmd_errconc(a):
+    from .diagnose import error_concentration
+    bank = load_bank(a.bank)
+    out = {}
+    for shot in a.shots:
+        res = error_concentration(bank, a.split_seeds, a.sequences, shot, a.q, a.sigmas, a.split_mode)
+        out[str(shot)] = res
+        print(f'== {shot}-shot (pseudo-novel prototypes, q={a.q} per band)')
+        for k, v in res.items():
+            print(f"  {k:18s} coverage {100 * v['coverage']:5.1f}%  error captured {100 * v['capture']:5.1f}%  "
+                  f"concentration x{v['concentration']:.2f}")
+    write_json(Path(a.out) / 'error_concentration.json', out)
+
+
 def cmd_smoke(a):
     from .synthetic import make_bank
     from .bank import save_bank
@@ -352,6 +366,8 @@ def main(argv=None):
     sp.add_argument('--sequences', type=int, default=10)
     sp.add_argument('--split-mode', default='random', choices=('random', 'contiguous'))
     sp.add_argument('--tolerance', type=float, help='override every entry tolerance (pp)')
+    sp.add_argument('--objective', default='last', choices=('last', 'hm', 'avg'),
+                    help='pseudo last-session metric maximised by the selection')
     sp.set_defaults(func=cmd_select)
 
     sp = sub.add_parser('evaluate')
@@ -391,6 +407,17 @@ def main(argv=None):
     sp.add_argument('--sequences', type=int, default=10)
     sp.add_argument('--split-mode', default='contiguous', choices=('random', 'contiguous'))
     sp.set_defaults(func=cmd_frontier)
+
+    sp = sub.add_parser('errconc')
+    sp.add_argument('--bank', required=True)
+    sp.add_argument('--out', required=True)
+    sp.add_argument('--shots', type=int, nargs='+', default=[1, 5])
+    sp.add_argument('--q', type=int, default=50)
+    sp.add_argument('--sigmas', type=float, nargs='+', default=[1, 2, 4])
+    sp.add_argument('--split-seeds', type=int, nargs='+', default=[2, 3, 4])
+    sp.add_argument('--sequences', type=int, default=5)
+    sp.add_argument('--split-mode', default='contiguous', choices=('random', 'contiguous'))
+    sp.set_defaults(func=cmd_errconc)
 
     sp = sub.add_parser('gates')
     sp.add_argument('--dir', required=True)
