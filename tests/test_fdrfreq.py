@@ -355,3 +355,18 @@ def test_ula_matches_algorithm_1():
         want[n, c2] += d
     assert np.allclose(got, want)
     assert np.array_equal(ula_adjust(z, nb, tau, 0.0, T, a, tth), z)
+
+
+def test_eb_recomposition_is_shot_aware_and_falls_back(bank, bench):
+    r = EpisodeRunner(bank, bench)
+    raw = {'ensemble': {}, 'holistic': None}
+    ref = r.run(raw)['last_pred']
+    off = r.run({**raw, 'segments': {'type': 'eb', 'alpha': 0.0, 'r': 5}})['last_pred']
+    assert np.array_equal(ref, off)
+    on = r.run({**raw, 'segments': {'type': 'eb', 'alpha': 1.0, 'r': 5}})
+    uni = r.run({**raw, 'segments': {'type': 'eb_uniform', 'alpha': 1.0, 'r': 5}})
+    assert on['segment_stats']['channels_touched'] > 0
+    assert np.isclose(on['segment_stats']['channels_touched'], uni['segment_stats']['channels_touched'])
+    one = EpisodeRunner(bank, benchmark_episode(bank, 1, shot=1))
+    s1 = one.run({**raw, 'segments': {'type': 'eb', 'alpha': 1.0, 'r': 5}})['segment_stats']['channels_touched']
+    assert s1 > on['segment_stats']['channels_touched']   # fewer shots -> borrow more

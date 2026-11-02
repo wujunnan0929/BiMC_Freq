@@ -160,6 +160,7 @@ def gate_report(out):
     """Development-only go/no-go verdicts (no test image is involved)."""
     m = {n: _dev_metrics(out, n) for n in ('BiMC_ens', 'A1', 'A2', 'K0', 'K1', 'K2_random', 'Q1',
                                            'Q6_union', 'Q6_random', 'Q6_var', 'Q6_mag', 'Q6_fisher',
+                                           'Q7_eb', 'Q7_uniform', 'Q7_shuffled',
                                            'Q2_classperm', 'Q3_random', 'Q4', 'Q4_shuffled', 'F1',
                                            'F3_aug', 'F4_noise', 'F5_randband', 'F6_blurdiff', 'R1')}
     diag = None
@@ -207,6 +208,7 @@ def gate_report(out):
                 f'{k} {b["delta_vs_cls"]:+.2f} (splits+ {b["splits_positive"]}), best control {ctrl:+.2f}')
     for meth, fb, ctrls in (('Q1', 'K0', ('Q2_classperm', 'Q3_random')),
                             ('Q6_union', 'K0', ('Q6_random', 'Q6_var', 'Q6_mag', 'Q6_fisher')),
+                            ('Q7_eb', 'K0', ('Q7_uniform', 'Q7_shuffled', 'Q6_var')),
                             ('Q4', 'K1', ('Q4_shuffled',)),
                             ('F1', 'A2', ('F3_aug', 'F4_noise', 'F5_randband'))):
         v = d(meth, fb)

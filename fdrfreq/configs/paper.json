@@ -451,6 +451,75 @@
    }
   },
   {
+   "name": "Q7_eb",
+   "chain": "A2",
+   "base": {
+    "holistic": null,
+    "segments": {
+     "type": "eb",
+     "sim": "text",
+     "tau": 22.0,
+     "r": 29
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.0,
+     0.25,
+     0.5,
+     0.75,
+     1.0,
+     1.5,
+     2.0,
+     3.0
+    ],
+    "segments.tau": [
+     16.0,
+     22.0
+    ],
+    "segments.r": [
+     29,
+     50
+    ]
+   },
+   "fallback": {
+    "segments": null,
+    "holistic": {
+     "donor": "visual",
+     "lam": 0.1,
+     "tau": 16.0
+    }
+   },
+   "include_fallback": true
+  },
+  {
+   "name": "Q7_uniform",
+   "chain": "Q7_eb",
+   "base": {
+    "segments": {
+     "type": "eb_uniform"
+    }
+   }
+  },
+  {
+   "name": "Q7_shuffled",
+   "chain": "Q7_eb",
+   "base": {
+    "segments": {
+     "type": "eb_shuffled"
+    }
+   }
+  },
+  {
+   "name": "Q7_eb_visual",
+   "chain": "Q7_eb",
+   "base": {
+    "segments": {
+     "sim": "visual"
+    }
+   }
+  },
+  {
    "name": "Q4",
    "chain": "K1",
    "base": {
@@ -877,7 +946,8 @@
    },
    "fallback": {
     "ula": null
-   }
+   },
+   "include_fallback": true
   },
   {
    "name": "Ours_ULA_Q6",
@@ -916,7 +986,48 @@
    },
    "fallback": {
     "ula": null
-   }
+   },
+   "include_fallback": true
+  },
+  {
+   "name": "Ours_ULA_Q7",
+   "chain": "Q7_eb",
+   "base": {
+    "ula": {
+     "a": 8.0
+    }
+   },
+   "grid": {
+    "ula.tau": [
+     0.005,
+     0.01,
+     0.02,
+     0.04,
+     0.08,
+     0.16,
+     0.32
+    ],
+    "ula.lam": [
+     0.04,
+     0.1,
+     0.4,
+     1.0
+    ],
+    "ula.tth": [
+     0.06,
+     0.5,
+     0.8,
+     0.95
+    ],
+    "ula.T": [
+     0.25,
+     1.0
+    ]
+   },
+   "fallback": {
+    "ula": null
+   },
+   "include_fallback": true
   }
  ]
 }

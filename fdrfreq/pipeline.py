@@ -211,6 +211,7 @@ class EpisodeRunner:
         s = c['segments']
         stats = None
         if s is not None and len(nov):
+            self._cur_lam_t = c['lambda_t']
             P[nov] = self._segments(P, nov, s, tc, base_vis)
             stats = {'channels_touched': float(np.mean(self._seg_cov)) if self._seg_cov else 0.0,
                      'segments_per_class': float(np.mean(self._seg_n)) if self._seg_n else 0.0}
@@ -222,10 +223,67 @@ class EpisodeRunner:
         h, s = c['holistic'], c['segments']
         return bool((h and h.get('donor') == 'text') or (s and s.get('sim') == 'text'))
 
+    def _eb(self, P, nov, s, tc, base_vis):
+        """Channel-wise empirical-Bayes recomposition (shot-aware, closed form).
+
+        Each novel prototype p_hat (K shots) is pulled toward a base-donor estimate
+        d (text-similarity weighted base prototypes, as in K0) channel by channel:
+            p_j <- p_hat_j + rho_j (d_j - p_hat_j),
+            rho_j = lam * s_j^2 / (s_j^2 + t_j^2),  s_j^2 = sigma_j^2 / (K g^2),
+        sigma_j^2: pooled within-class variance of channel j on base images,
+        g^2: mean squared norm of base class means (unit-normalisation factor),
+        t_j^2: donor error variance, estimated leave-one-out on the base classes
+        and corrected for their own sampling noise. Few shots or noisy channels
+        borrow more; rho does not need a per-shot strength. eb_uniform replaces
+        rho by its per-class mean (= holistic shrinkage); eb_shuffled permutes rho
+        across channels (same distribution, wrong channels).
+        """
+        nb = self.nb
+        ek = _key('ebstats', s['sim'], s['tau'], s['r'], getattr(self, '_cur_lam_t', None))
+        if ek not in self.cache:
+            Xc, _ = within_class_centered(self.sup_feat[0], self.sup_lab[0], self.base_cls)
+            sig2 = (Xc ** 2).sum(0) / max(len(Xc) - nb, 1)
+            g2 = float((np.linalg.norm(self.raw_mean[:nb], axis=1) ** 2).mean())
+            src = tc if s['sim'] == 'text' else self.raw_proto
+            S = l2n(src[:nb]) @ l2n(src[:nb]).T
+            np.fill_diagonal(S, -np.inf)
+            r = int(min(s['r'], nb - 1))
+            D = np.zeros_like(base_vis)
+            for b in range(nb):
+                top = np.argpartition(-S[b], r - 1)[:r]
+                D[b] = l2n(softmax(s['tau'] * S[b, top]) @ base_vis[top])
+            E2 = ((base_vis - D) ** 2).mean(0)
+            noise_b = sig2 / (self.counts[:nb].mean() * g2)
+            t2 = np.maximum(E2 - noise_b, 1e-3 * E2.mean())
+            self.cache[ek] = (sig2, g2, t2, src)
+        sig2, g2, t2, src = self.cache[ek]
+        Sn = l2n(src[nov]) @ l2n(src[:nb]).T
+        r = int(min(s['r'], nb))
+        out = np.zeros((len(nov), base_vis.shape[1]))
+        perm = np.random.RandomState(4242 + int(s['seed'])).permutation(base_vis.shape[1])
+        rhos = []
+        for i, j in enumerate(nov):
+            top = np.argpartition(-Sn[i], r - 1)[:r]
+            d = l2n(softmax(s['tau'] * Sn[i, top]) @ base_vis[top])
+            s2 = sig2 / (self.counts[j] * g2)
+            rho = np.clip(s['alpha'] * s2 / (s2 + t2), 0.0, 1.0)
+            if s['type'] == 'eb_uniform':
+                rho = np.full_like(rho, rho.mean())
+            elif s['type'] == 'eb_shuffled':
+                rho = rho[perm]
+            rhos.append(rho)
+            out[i] = l2n(P[j] + rho * (d - P[j]))
+        R = np.asarray(rhos)
+        self._seg_cov = [float(x) for x in (R.mean(1) * base_vis.shape[1])]
+        self._seg_n = [1] * len(nov)
+        return out
+
     def _segments(self, P, nov, s, tc, base_vis):
         out = P[nov].copy()
         self._seg_cov, self._seg_n = [], []
         typ = s['type']
+        if typ in ('eb', 'eb_uniform', 'eb_shuffled'):
+            return self._eb(P, nov, s, tc, base_vis)
         lib = rand_lib = None
         if typ.startswith('keyword'):
             coord = 'fdr' if typ == 'keyword_fdr' else 'final'

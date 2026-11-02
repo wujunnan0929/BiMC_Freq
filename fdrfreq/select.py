@@ -110,12 +110,16 @@ def select(bank, entry, episodes, progress=None, tolerance=None, objective='last
         key = {'last': 'last', 'hm': 'last_hm', 'avg': 'avg'}[objective]
         best = max(feasible, key=lambda i: (round(rows[i][key], 9), -i))
         best_cfg = cands[best][1]
+        if entry.get('include_fallback') and fb is not None:
+            fb_key = {'last': fb[0], 'last_hm': fb[4], 'avg': fb[3]}[key]
+            if fb_key >= rows[best][key]:
+                best, best_cfg = None, fallback
     report = {
         'name': entry['name'], 'selected_params': rows[best]['params'] if best is not None else 'fallback',
         'selected_config': best_cfg, 'selected_hash': config_hash(best_cfg),
         'fallback_config': fallback,
         'fallback_metrics': None if fb is None else {'last': fb[0], 'last_base': fb[1],
-                                                     'last_novel': fb[2], 'avg': fb[3]},
+                                                     'last_novel': fb[2], 'avg': fb[3], 'last_hm': fb[4]},
         'candidates': rows, 'tolerance': tol, 'objective': objective,
         'dev_protocol': {'split_seeds': sorted(set(split_ids.tolist())),
                          'split_mode': episodes[0].meta.get('split_mode', 'random'),
