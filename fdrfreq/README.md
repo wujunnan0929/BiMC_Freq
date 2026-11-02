@@ -35,6 +35,7 @@ Windows 下用 `fdrfreq\scripts\dev.ps1` 和 `final.ps1`，参数相同。
 | `python -m fdrfreq.run parity` | 缓存版 BiMC / BiMC† 的逐 session 精度，用来和 engine 结果对齐 | 是（只用于基线） |
 | `python -m fdrfreq.run diagnose` | 频率掩码诊断、D0 top-k recall、D2 互补性、D3 信息上界 | 否 |
 | `python -m fdrfreq.run select` | 在伪增量 episode 上选参并锁定配置（`locked_*.json`） | 否 |
+| `python -m fdrfreq.run probe` | 协议保真度：固定参考配置在两种伪增量划分（random / contiguous）上的 base / novel 变化方向；加 `--with-test` 时并列给出基准上的同一组固定配置 | 仅 `--with-test` 时 |
 | `python -m fdrfreq.run gates` | 根据 select / diagnose 输出给出各闸门的 PASS / FAIL | 否 |
 | `python -m fdrfreq.run evaluate` | 只接受 `locked_*.json`；文件被改过（hash 不符）或来自其他 bank 都会拒绝 | 是 |
 | `python -m fdrfreq.report` | 主表、与 anchor 的配对比较（bootstrap CI、seed 计数、fixed/broken、McNemar）、逐 session 表 | 读 evaluate 输出 |
@@ -72,6 +73,8 @@ fdrfreq/
   extract.py    唯一依赖 torch 的模块
   synthetic.py  合成 bank（测试与冒烟用）
 ```
+
+`select` 和 `diagnose` 支持 `--split-mode random|contiguous`；`select` 支持 `--tolerance`，可统一覆盖矩阵里的 base / novel 容差。
 
 ## 已知限制
 

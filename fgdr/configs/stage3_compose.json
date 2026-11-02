@@ -1,0 +1,90 @@
+{
+  "_doc": "Final composition search after the stage gates: combine the selected anchor with the selected calibration. Edit the fixed values (taken from the stage selections) before running.",
+  "reference": "BiMC_dagger",
+  "methods": [
+    {
+      "name": "FGDR_K",
+      "calibration": {
+        "type": "segments",
+        "weight_source": "text",
+        "lambda": 0.2,
+        "tau": 22.0,
+        "segments": {
+          "source": "keyword",
+          "coord": "final",
+          "alpha": 0.2,
+          "topr": 29,
+          "tau": 22.0,
+          "sim_source": "text"
+        }
+      },
+      "anchor": {
+        "enabled": true,
+        "mode": "predictive",
+        "ridge": 0.1,
+        "novel_mean": "calibrated"
+      },
+      "grid": {
+        "anchor.alpha": [
+          0.05,
+          0.1,
+          0.2
+        ],
+        "anchor.temperature": [
+          0.1,
+          0.3
+        ],
+        "anchor.kappa": [
+          0.0,
+          0.5,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "FGDR_Q",
+      "calibration": {
+        "type": "segments",
+        "weight_source": "text",
+        "lambda": 0.2,
+        "tau": 22.0,
+        "segments": {
+          "source": "frequency",
+          "view": "blur",
+          "q": 50,
+          "alpha": 0.2,
+          "topr": 29,
+          "tau": 22.0,
+          "sim_source": "text",
+          "bands": [
+            0,
+            1,
+            2
+          ]
+        }
+      },
+      "anchor": {
+        "enabled": true,
+        "mode": "predictive",
+        "ridge": 0.1,
+        "novel_mean": "calibrated"
+      },
+      "grid": {
+        "anchor.alpha": [
+          0.05,
+          0.1,
+          0.2
+        ],
+        "anchor.temperature": [
+          0.1,
+          0.3
+        ],
+        "anchor.kappa": [
+          0.0,
+          0.5,
+          1.0
+        ]
+      }
+    }
+  ]
+}

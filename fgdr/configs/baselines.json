@@ -1,0 +1,92 @@
+{
+  "_doc": "Fixed (untuned) baselines reproduced in the same pipeline for the paper tables; hyper-parameters follow the original papers / BiMC defaults.",
+  "baselines": [
+    {
+      "name": "CLIP_ZS",
+      "bimc": {
+        "beta": 1.0,
+        "lambda_t": 0.0,
+        "ensemble": false
+      },
+      "calibration": {
+        "type": "none"
+      }
+    },
+    {
+      "name": "ProtoNet",
+      "bimc": {
+        "beta": 0.0,
+        "ensemble": false
+      },
+      "calibration": {
+        "type": "none"
+      }
+    },
+    {
+      "name": "TEEN",
+      "bimc": {
+        "beta": 0.0,
+        "ensemble": false
+      },
+      "calibration": {
+        "type": "bimc"
+      }
+    },
+    {
+      "name": "GDA_only",
+      "bimc": {
+        "ensemble": true
+      },
+      "anchor": {
+        "enabled": true,
+        "alpha": 1.0,
+        "temperature": 1.0,
+        "ridge": 0.1
+      }
+    },
+    {
+      "name": "FDR_tf",
+      "_doc": "FDR training-free (visual prototype classifier) with its released CUB 5-shot settings",
+      "bimc": {
+        "beta": 0.0,
+        "ensemble": false
+      },
+      "calibration": {
+        "type": "segments",
+        "weight_source": "text",
+        "lambda": 0.2,
+        "tau": 22.0,
+        "fdr_softmax": true,
+        "segments": {
+          "source": "keyword",
+          "coord": "fdr",
+          "alpha": 0.2,
+          "topr": 29,
+          "tau": 22.0,
+          "sim_source": "text",
+          "fdr_softmax": true
+        }
+      }
+    },
+    {
+      "name": "BiMC_FDR",
+      "_doc": "BiMC-dagger with FDR's released settings plugged into the visual calibration",
+      "calibration": {
+        "type": "segments",
+        "weight_source": "text",
+        "lambda": 0.2,
+        "tau": 22.0,
+        "fdr_softmax": true,
+        "segments": {
+          "source": "keyword",
+          "coord": "fdr",
+          "alpha": 0.2,
+          "topr": 29,
+          "tau": 22.0,
+          "sim_source": "text",
+          "fdr_softmax": true
+        }
+      }
+    }
+  ]
+}

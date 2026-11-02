@@ -1,0 +1,152 @@
+{
+  "_doc": "Stage 0-prime: FDR inside BiMC (non-frequency positive control). K0 = text-weighted holistic donors (FDR code's undocumented first step). K1 = K0 + keyword segments in final CLIP coordinates; K1fdr = FDR's original value-space coordinates and softmax; K2 = keyword-fixed random masks (FDR random-segment ablation). Needs --keywords.",
+  "reference": "BiMC_dagger",
+  "methods": [
+    {
+      "name": "K0v",
+      "calibration": {
+        "type": "holistic",
+        "weight_source": "visual"
+      },
+      "grid": {
+        "calibration.lambda": [
+          0.1,
+          0.2,
+          0.3,
+          0.5
+        ],
+        "calibration.tau": [
+          16.0,
+          22.0,
+          32.0
+        ]
+      }
+    },
+    {
+      "name": "K0",
+      "calibration": {
+        "type": "holistic",
+        "weight_source": "text"
+      },
+      "grid": {
+        "calibration.lambda": [
+          0.0,
+          0.1,
+          0.2,
+          0.3,
+          0.5
+        ],
+        "calibration.tau": [
+          16.0,
+          22.0,
+          32.0
+        ],
+        "calibration.topr": [
+          null,
+          29
+        ]
+      }
+    },
+    {
+      "name": "K1",
+      "calibration": {
+        "type": "segments",
+        "weight_source": "text",
+        "tau": 22.0,
+        "segments": {
+          "source": "keyword",
+          "coord": "final",
+          "sim_source": "text"
+        }
+      },
+      "grid": {
+        "calibration.lambda": [
+          0.0,
+          0.1,
+          0.2
+        ],
+        "calibration.segments.alpha": [
+          0.0,
+          0.2,
+          0.5
+        ],
+        "calibration.segments.topr": [
+          29,
+          50
+        ],
+        "calibration.segments.tau": [
+          16.0,
+          22.0
+        ]
+      }
+    },
+    {
+      "name": "K1fdr",
+      "calibration": {
+        "type": "segments",
+        "weight_source": "text",
+        "tau": 22.0,
+        "fdr_softmax": true,
+        "segments": {
+          "source": "keyword",
+          "coord": "fdr",
+          "sim_source": "text",
+          "fdr_softmax": true
+        }
+      },
+      "grid": {
+        "calibration.lambda": [
+          0.0,
+          0.1,
+          0.2
+        ],
+        "calibration.segments.alpha": [
+          0.0,
+          0.2,
+          0.5
+        ],
+        "calibration.segments.topr": [
+          29,
+          50
+        ],
+        "calibration.segments.tau": [
+          16.0,
+          22.0
+        ]
+      }
+    },
+    {
+      "name": "K2",
+      "calibration": {
+        "type": "segments",
+        "weight_source": "text",
+        "tau": 22.0,
+        "segments": {
+          "source": "keyword_random",
+          "coord": "final",
+          "sim_source": "text"
+        }
+      },
+      "grid": {
+        "calibration.lambda": [
+          0.0,
+          0.1,
+          0.2
+        ],
+        "calibration.segments.alpha": [
+          0.0,
+          0.2,
+          0.5
+        ],
+        "calibration.segments.topr": [
+          29,
+          50
+        ],
+        "calibration.segments.tau": [
+          16.0,
+          22.0
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,293 @@
+{
+  "_doc": "Stage 3a: frequency-grounded segments (visual grounding replaces FDR's text grounding). Q1 = blur-ladder masks; Q2 = masks of another class (class specificity control); Q3 = random masks per class; Qp = matched non-frequency perturbation masks (hflip/gray/contrast). Q1b* = single bands. Q4 = keyword segments whose strength is set by fine-detail energy; Q4s shuffles those strengths. Run only if G0-prime and G1-prime pass.",
+  "reference": "BiMC_dagger",
+  "methods": [
+    {
+      "name": "Q1",
+      "calibration": {
+        "type": "segments",
+        "weight_source": "text",
+        "tau": 22.0,
+        "segments": {
+          "source": "frequency",
+          "view": "blur",
+          "sim_source": "text",
+          "topr": 29,
+          "tau": 22.0,
+          "bands": [
+            0,
+            1,
+            2
+          ]
+        }
+      },
+      "grid": {
+        "calibration.lambda": [
+          0.0,
+          0.1,
+          0.2
+        ],
+        "calibration.segments.q": [
+          37,
+          50
+        ],
+        "calibration.segments.alpha": [
+          0.0,
+          0.2,
+          0.5
+        ]
+      }
+    },
+    {
+      "name": "Q2",
+      "calibration": {
+        "type": "segments",
+        "weight_source": "text",
+        "tau": 22.0,
+        "segments": {
+          "source": "frequency_class_shuffled",
+          "view": "blur",
+          "sim_source": "text",
+          "topr": 29,
+          "tau": 22.0,
+          "bands": [
+            0,
+            1,
+            2
+          ]
+        }
+      },
+      "grid": {
+        "calibration.lambda": [
+          0.0,
+          0.1,
+          0.2
+        ],
+        "calibration.segments.q": [
+          37,
+          50
+        ],
+        "calibration.segments.alpha": [
+          0.0,
+          0.2,
+          0.5
+        ]
+      }
+    },
+    {
+      "name": "Q3",
+      "calibration": {
+        "type": "segments",
+        "weight_source": "text",
+        "tau": 22.0,
+        "segments": {
+          "source": "frequency_random",
+          "view": "blur",
+          "sim_source": "text",
+          "topr": 29,
+          "tau": 22.0,
+          "bands": [
+            0,
+            1,
+            2
+          ]
+        }
+      },
+      "grid": {
+        "calibration.lambda": [
+          0.0,
+          0.1,
+          0.2
+        ],
+        "calibration.segments.q": [
+          37,
+          50
+        ],
+        "calibration.segments.alpha": [
+          0.0,
+          0.2,
+          0.5
+        ]
+      }
+    },
+    {
+      "name": "Qp",
+      "calibration": {
+        "type": "segments",
+        "weight_source": "text",
+        "tau": 22.0,
+        "segments": {
+          "source": "perturbation",
+          "view": "blur",
+          "sim_source": "text",
+          "topr": 29,
+          "tau": 22.0,
+          "bands": [
+            0,
+            1,
+            2
+          ]
+        }
+      },
+      "grid": {
+        "calibration.lambda": [
+          0.0,
+          0.1,
+          0.2
+        ],
+        "calibration.segments.q": [
+          37,
+          50
+        ],
+        "calibration.segments.alpha": [
+          0.0,
+          0.2,
+          0.5
+        ]
+      }
+    },
+    {
+      "name": "Q1b0",
+      "calibration": {
+        "type": "segments",
+        "weight_source": "text",
+        "tau": 22.0,
+        "segments": {
+          "source": "frequency",
+          "view": "blur",
+          "sim_source": "text",
+          "topr": 29,
+          "tau": 22.0,
+          "bands": [
+            0
+          ]
+        }
+      },
+      "grid": {
+        "calibration.lambda": [
+          0.1,
+          0.2
+        ],
+        "calibration.segments.alpha": [
+          0.2,
+          0.5
+        ]
+      }
+    },
+    {
+      "name": "Q1b1",
+      "calibration": {
+        "type": "segments",
+        "weight_source": "text",
+        "tau": 22.0,
+        "segments": {
+          "source": "frequency",
+          "view": "blur",
+          "sim_source": "text",
+          "topr": 29,
+          "tau": 22.0,
+          "bands": [
+            1
+          ]
+        }
+      },
+      "grid": {
+        "calibration.lambda": [
+          0.1,
+          0.2
+        ],
+        "calibration.segments.alpha": [
+          0.2,
+          0.5
+        ]
+      }
+    },
+    {
+      "name": "Q1b2",
+      "calibration": {
+        "type": "segments",
+        "weight_source": "text",
+        "tau": 22.0,
+        "segments": {
+          "source": "frequency",
+          "view": "blur",
+          "sim_source": "text",
+          "topr": 29,
+          "tau": 22.0,
+          "bands": [
+            2
+          ]
+        }
+      },
+      "grid": {
+        "calibration.lambda": [
+          0.1,
+          0.2
+        ],
+        "calibration.segments.alpha": [
+          0.2,
+          0.5
+        ]
+      }
+    },
+    {
+      "name": "Q4",
+      "calibration": {
+        "type": "segments",
+        "weight_source": "text",
+        "tau": 22.0,
+        "segments": {
+          "source": "keyword",
+          "coord": "final",
+          "topr": 29,
+          "tau": 22.0,
+          "alpha_from_frequency": true
+        }
+      },
+      "grid": {
+        "calibration.lambda": [
+          0.1,
+          0.2
+        ],
+        "calibration.segments.alpha": [
+          0.2,
+          0.5
+        ],
+        "calibration.segments.alpha_band": [
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Q4s",
+      "calibration": {
+        "type": "segments",
+        "weight_source": "text",
+        "tau": 22.0,
+        "segments": {
+          "source": "keyword",
+          "coord": "final",
+          "topr": 29,
+          "tau": 22.0,
+          "alpha_from_frequency": true,
+          "alpha_shuffle": true
+        }
+      },
+      "grid": {
+        "calibration.lambda": [
+          0.1,
+          0.2
+        ],
+        "calibration.segments.alpha": [
+          0.2,
+          0.5
+        ],
+        "calibration.segments.alpha_band": [
+          0,
+          1
+        ]
+      }
+    }
+  ]
+}

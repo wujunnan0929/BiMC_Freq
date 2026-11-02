@@ -1,0 +1,311 @@
+{
+  "_doc": "Stages 1-2 (D3 information bound): joint pooled-covariance GDA over [f ; residualised extra blocks]. F0 = no blocks (same grid). F1Lx = patch-token DCT band energies at cached layer index x. F5Lx = same energies over random coefficient groups. F6 = blurred-view blocks. F3 = non-frequency perturbation blocks. F4 = pure-noise blocks. Set anchor.ridge to the A1 selection before running.",
+  "reference": "BiMC_dagger",
+  "methods": [
+    {
+      "name": "F0",
+      "_doc": "no extra block",
+      "anchor": {
+        "enabled": true,
+        "mode": "plugin",
+        "ridge": 0.1,
+        "blocks": []
+      },
+      "grid": {
+        "anchor.alpha": [
+          0.0,
+          0.05,
+          0.1,
+          0.2
+        ],
+        "anchor.temperature": [
+          0.1,
+          0.3,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "F1L0",
+      "_doc": "DCT energies, first cached layer",
+      "anchor": {
+        "enabled": true,
+        "mode": "plugin",
+        "ridge": 0.1,
+        "blocks": [
+          {
+            "kind": "dct",
+            "layer": 0,
+            "band": 0,
+            "dim": 64
+          },
+          {
+            "kind": "dct",
+            "layer": 0,
+            "band": 1,
+            "dim": 64
+          },
+          {
+            "kind": "dct",
+            "layer": 0,
+            "band": 2,
+            "dim": 64
+          }
+        ]
+      },
+      "grid": {
+        "anchor.alpha": [
+          0.0,
+          0.05,
+          0.1,
+          0.2
+        ],
+        "anchor.temperature": [
+          0.1,
+          0.3,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "F1L1",
+      "_doc": "DCT energies, second cached layer",
+      "anchor": {
+        "enabled": true,
+        "mode": "plugin",
+        "ridge": 0.1,
+        "blocks": [
+          {
+            "kind": "dct",
+            "layer": 1,
+            "band": 0,
+            "dim": 64
+          },
+          {
+            "kind": "dct",
+            "layer": 1,
+            "band": 1,
+            "dim": 64
+          },
+          {
+            "kind": "dct",
+            "layer": 1,
+            "band": 2,
+            "dim": 64
+          }
+        ]
+      },
+      "grid": {
+        "anchor.alpha": [
+          0.0,
+          0.05,
+          0.1,
+          0.2
+        ],
+        "anchor.temperature": [
+          0.1,
+          0.3,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "F5L0",
+      "_doc": "random coefficient groups, first layer",
+      "anchor": {
+        "enabled": true,
+        "mode": "plugin",
+        "ridge": 0.1,
+        "blocks": [
+          {
+            "kind": "dct_rand",
+            "layer": 0,
+            "band": 0,
+            "dim": 64
+          },
+          {
+            "kind": "dct_rand",
+            "layer": 0,
+            "band": 1,
+            "dim": 64
+          },
+          {
+            "kind": "dct_rand",
+            "layer": 0,
+            "band": 2,
+            "dim": 64
+          }
+        ]
+      },
+      "grid": {
+        "anchor.alpha": [
+          0.0,
+          0.05,
+          0.1,
+          0.2
+        ],
+        "anchor.temperature": [
+          0.1,
+          0.3,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "F5L1",
+      "_doc": "random coefficient groups, second layer",
+      "anchor": {
+        "enabled": true,
+        "mode": "plugin",
+        "ridge": 0.1,
+        "blocks": [
+          {
+            "kind": "dct_rand",
+            "layer": 1,
+            "band": 0,
+            "dim": 64
+          },
+          {
+            "kind": "dct_rand",
+            "layer": 1,
+            "band": 1,
+            "dim": 64
+          },
+          {
+            "kind": "dct_rand",
+            "layer": 1,
+            "band": 2,
+            "dim": 64
+          }
+        ]
+      },
+      "grid": {
+        "anchor.alpha": [
+          0.0,
+          0.05,
+          0.1,
+          0.2
+        ],
+        "anchor.temperature": [
+          0.1,
+          0.3,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "F6",
+      "_doc": "blur-view blocks",
+      "anchor": {
+        "enabled": true,
+        "mode": "plugin",
+        "ridge": 0.1,
+        "blocks": [
+          {
+            "kind": "blur",
+            "index": 0,
+            "dim": 64
+          },
+          {
+            "kind": "blur",
+            "index": 1,
+            "dim": 64
+          },
+          {
+            "kind": "blur",
+            "index": 2,
+            "dim": 64
+          }
+        ]
+      },
+      "grid": {
+        "anchor.alpha": [
+          0.0,
+          0.05,
+          0.1,
+          0.2
+        ],
+        "anchor.temperature": [
+          0.1,
+          0.3,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "F3",
+      "_doc": "non-frequency perturbation blocks",
+      "anchor": {
+        "enabled": true,
+        "mode": "plugin",
+        "ridge": 0.1,
+        "blocks": [
+          {
+            "kind": "aug",
+            "index": 0,
+            "dim": 64
+          },
+          {
+            "kind": "aug",
+            "index": 1,
+            "dim": 64
+          },
+          {
+            "kind": "aug",
+            "index": 2,
+            "dim": 64
+          }
+        ]
+      },
+      "grid": {
+        "anchor.alpha": [
+          0.0,
+          0.05,
+          0.1,
+          0.2
+        ],
+        "anchor.temperature": [
+          0.1,
+          0.3,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "F4",
+      "_doc": "noise blocks",
+      "anchor": {
+        "enabled": true,
+        "mode": "plugin",
+        "ridge": 0.1,
+        "blocks": [
+          {
+            "kind": "noise",
+            "dim": 64
+          },
+          {
+            "kind": "noise",
+            "dim": 64
+          },
+          {
+            "kind": "noise",
+            "dim": 64
+          }
+        ]
+      },
+      "grid": {
+        "anchor.alpha": [
+          0.0,
+          0.05,
+          0.1,
+          0.2
+        ],
+        "anchor.temperature": [
+          0.1,
+          0.3,
+          1.0
+        ]
+      }
+    }
+  ]
+}
