@@ -270,6 +270,47 @@ def cmd_probe(a):
     write_json(Path(a.out) / f'probe_shot{a.shot or bank.inc_shot}.json', out)
 
 
+def cmd_frontier(a):
+    """Base/novel trade-off of segment-wise recomposition per decomposition axis.
+
+    Every axis is swept over the same strengths (and channel budgets q) on top of
+    a locked configuration (usually K0), on base-only pseudo episodes. Compare
+    axes at matched base cost or matched channel coverage, not at one alpha.
+    """
+    from .pipeline import deep_merge
+    bank = load_bank(a.bank)
+    base = json.loads(Path(a.base_locked).read_text(encoding='utf-8'))['config']
+    eps = sel.dev_episodes(bank, a.split_seeds, a.sequences, a.shot, a.split_mode)
+    runners = [EpisodeRunner(bank, e) for e in eps]
+    ref = [r.run(base)['summary'] for r in runners]
+    rb = {k: float(np.mean([x[k] for x in ref])) for k in ('last', 'last_base', 'last_novel', 'last_hm')}
+    print(f"reference ({len(eps)} episodes): last {rb['last']:.2f} base {rb['last_base']:.2f} "
+          f"novel {rb['last_novel']:.2f} hm {rb['last_hm']:.2f}")
+    rows = []
+    for axis in a.axes:
+        qs = a.q if axis.startswith('freq') else [a.q[0]]
+        for q in qs:
+            for alpha in a.alphas:
+                seg = {'type': axis, 'q': q, 'r': a.r, 'tau': a.tau, 'alpha': alpha, 'sim': 'text',
+                       'sigmas': [1, 2, 4], 'bands': [0, 1, 2]}
+                cfg = deep_merge(base, {'segments': seg})
+                S, cov = [], []
+                for r in runners:
+                    res = r.run(cfg)
+                    S.append(res['summary'])
+                    if res['segment_stats']:
+                        cov.append(res['segment_stats']['channels_touched'])
+                m = {k: float(np.mean([x[k] for x in S])) for k in ('last', 'last_base', 'last_novel', 'last_hm')}
+                row = {'axis': axis, 'q': q, 'alpha': alpha, **m,
+                       'd_last': m['last'] - rb['last'], 'd_base': m['last_base'] - rb['last_base'],
+                       'd_novel': m['last_novel'] - rb['last_novel'],
+                       'channels': float(np.mean(cov)) if cov else 0.0}
+                rows.append(row)
+                print(f"{axis:16s} q{q:<4d} a{alpha:<5} ch {row['channels']:6.1f}  dLast {row['d_last']:+.2f} "
+                      f"dBase {row['d_base']:+.2f} dNovel {row['d_novel']:+.2f} HM {m['last_hm']:.2f}")
+    write_json(Path(a.out) / f'frontier_shot{a.shot or bank.inc_shot}.json', {'reference': rb, 'rows': rows})
+
+
 def cmd_smoke(a):
     from .synthetic import make_bank
     from .bank import save_bank
@@ -336,6 +377,20 @@ def main(argv=None):
     sp.add_argument('--with-test', action='store_true',
                     help='also score the same fixed reference configs on the benchmark (seeds 1-3)')
     sp.set_defaults(func=cmd_probe)
+
+    sp = sub.add_parser('frontier')
+    common(sp)
+    sp.add_argument('--base-locked', required=True, help='locked_*.json to start from (e.g. locked_K0.json)')
+    sp.add_argument('--axes', nargs='+', default=['freq', 'freq_classperm', 'freq_random', 'keyword',
+                                                  'keyword_fdr', 'keyword_random'])
+    sp.add_argument('--alphas', type=float, nargs='+', default=[0.05, 0.1, 0.2, 0.3, 0.5])
+    sp.add_argument('--q', type=int, nargs='+', default=[50, 100, 150])
+    sp.add_argument('--r', type=int, default=29)
+    sp.add_argument('--tau', type=float, default=22.0)
+    sp.add_argument('--split-seeds', type=int, nargs='+', default=[2, 3, 4])
+    sp.add_argument('--sequences', type=int, default=10)
+    sp.add_argument('--split-mode', default='contiguous', choices=('random', 'contiguous'))
+    sp.set_defaults(func=cmd_frontier)
 
     sp = sub.add_parser('gates')
     sp.add_argument('--dir', required=True)

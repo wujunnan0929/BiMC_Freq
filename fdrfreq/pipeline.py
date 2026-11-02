@@ -174,9 +174,13 @@ class EpisodeRunner:
                 raise ValueError('holistic donor must be visual or text')
             P[nov] = holistic(P[nov], base_vis, src_n, src_b, h['lam'], h['tau'])
         s = c['segments']
+        stats = None
         if s is not None and len(nov):
             P[nov] = self._segments(P, nov, s, tc, base_vis)
+            stats = {'channels_touched': float(np.mean(self._seg_cov)) if self._seg_cov else 0.0,
+                     'segments_per_class': float(np.mean(self._seg_n)) if self._seg_n else 0.0}
         self.cache[hk] = P
+        self.cache['segstats' + hk] = stats
         return P
 
     def _uses_text(self, c):
@@ -185,6 +189,7 @@ class EpisodeRunner:
 
     def _segments(self, P, nov, s, tc, base_vis):
         out = P[nov].copy()
+        self._seg_cov, self._seg_n = [], []
         typ = s['type']
         lib = rand_lib = None
         if typ.startswith('keyword'):
@@ -223,6 +228,8 @@ class EpisodeRunner:
                 src_n, src_b = tc[j], tc[:self.nb]
             else:
                 src_n, src_b = out[i], base_vis
+            self._seg_cov.append(int(np.logical_or.reduce(segs).sum()) if segs else 0)
+            self._seg_n.append(len(segs))
             out[i] = segment_step(out[i], segs, src_n, src_b, base_vis, s['r'], alphas, s['tau'])
         return out
 
@@ -414,7 +421,10 @@ class EpisodeRunner:
                 last = {'pred': pred, 'labels': labels}
                 if keep_scores:
                     last['scores'] = z
+        seg_stats = self.cache.get('segstats' + _key('vis', c['holistic'], c['segments'],
+                                   c['lambda_t'] if self._uses_text(c) else None))
         return {'per_session': per_session, 'summary': summarize_sessions(per_session),
+                'segment_stats': seg_stats,
                 'last_pred': last['pred'], 'last_labels': last['labels'],
                 'last_scores': last.get('scores'), 'config': c}
 
