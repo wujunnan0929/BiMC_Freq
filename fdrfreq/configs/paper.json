@@ -1,0 +1,644 @@
+{
+ "description": "Paper experiment matrix. Run entries in order; 'chain' entries start from the locked configuration of the named entry in the same output directory. Dataset defaults (beta, ensemble alpha) come from the bank meta. Grid values go from weakest to strongest so ties keep the weaker setting. Matched controls (no grid) reuse the locked hyper-parameters of the method they control. AX_* entries compare decomposition axes at FDR's published strength (alpha 0.2, q 37, r 29, tau 22) on top of K0, independent of what the selection chose; they feed the axis table (T5) only.",
+ "entries": [
+  {
+   "name": "ZS",
+   "base": {
+    "classifier": "zeroshot",
+    "lambda_t": 0.0,
+    "holistic": null
+   }
+  },
+  {
+   "name": "ZS_desc",
+   "base": {
+    "classifier": "zeroshot",
+    "lambda_t": 0.5,
+    "holistic": null
+   }
+  },
+  {
+   "name": "Proto",
+   "base": {
+    "classifier": "proto",
+    "holistic": null
+   }
+  },
+  {
+   "name": "TEEN",
+   "base": {
+    "classifier": "proto",
+    "holistic": {
+     "donor": "visual",
+     "lam": 0.1,
+     "tau": 16.0
+    }
+   },
+   "grid": {
+    "holistic.lam": [
+     0.0,
+     0.1,
+     0.25,
+     0.5
+    ]
+   },
+   "fallback": {
+    "holistic.lam": 0.0
+   }
+  },
+  {
+   "name": "FDR_tf_published",
+   "base": {
+    "classifier": "proto",
+    "holistic": {
+     "donor": "text",
+     "lam": 0.2,
+     "tau": 22.0
+    },
+    "segments": {
+     "type": "keyword_fdr",
+     "q": 37,
+     "r": 29,
+     "alpha": 0.2,
+     "tau": 22.0,
+     "sim": "text"
+    }
+   }
+  },
+  {
+   "name": "BiMC",
+   "base": {}
+  },
+  {
+   "name": "BiMC_ens",
+   "base": {
+    "ensemble": {}
+   }
+  },
+  {
+   "name": "LA",
+   "chain": "BiMC_ens",
+   "base": {},
+   "grid": {
+    "novel_bias": [
+     0.0,
+     0.02,
+     0.05,
+     0.1,
+     0.2,
+     0.5
+    ]
+   },
+   "fallback": {
+    "novel_bias": 0.0
+   }
+  },
+  {
+   "name": "A1",
+   "chain": "BiMC_ens",
+   "base": {
+    "anchor": {
+     "blocks": [],
+     "kappa": 0.0
+    }
+   },
+   "grid": {
+    "anchor.omega": [
+     0.0,
+     0.05,
+     0.1,
+     0.2,
+     0.3
+    ],
+    "anchor.temperature": [
+     0.1,
+     0.3,
+     1.0
+    ]
+   },
+   "fallback": {
+    "anchor.omega": 0.0
+   }
+  },
+  {
+   "name": "A2",
+   "chain": "A1",
+   "base": {},
+   "grid": {
+    "anchor.kappa_mode": [
+     "debias",
+     "predictive"
+    ],
+    "anchor.kappa": [
+     0.0,
+     0.25,
+     0.5,
+     1.0
+    ]
+   },
+   "fallback": {
+    "anchor.kappa": 0.0
+   }
+  },
+  {
+   "name": "K0",
+   "chain": "A2",
+   "base": {
+    "holistic": {
+     "donor": "text"
+    }
+   },
+   "grid": {
+    "holistic.lam": [
+     0.1,
+     0.2,
+     0.3,
+     0.5
+    ],
+    "holistic.tau": [
+     16.0,
+     22.0
+    ]
+   },
+   "fallback": {
+    "holistic.donor": "visual",
+    "holistic.lam": 0.1,
+    "holistic.tau": 16.0
+   }
+  },
+  {
+   "name": "K1",
+   "chain": "K0",
+   "base": {
+    "segments": {
+     "type": "keyword",
+     "sim": "text"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.0,
+     0.1,
+     0.2,
+     0.5
+    ],
+    "segments.q": [
+     37,
+     50
+    ],
+    "segments.r": [
+     29,
+     50
+    ],
+    "segments.tau": [
+     16.0,
+     22.0
+    ]
+   },
+   "fallback": {
+    "segments": null
+   }
+  },
+  {
+   "name": "K1_fdrcoord",
+   "chain": "K1",
+   "base": {
+    "segments": {
+     "type": "keyword_fdr"
+    }
+   }
+  },
+  {
+   "name": "K2_random",
+   "chain": "K1",
+   "base": {
+    "segments": {
+     "type": "keyword_random"
+    }
+   }
+  },
+  {
+   "name": "Q1",
+   "chain": "K0",
+   "base": {
+    "segments": {
+     "type": "freq",
+     "sim": "text",
+     "sigmas": [
+      1,
+      2,
+      4
+     ],
+     "bands": [
+      0,
+      1,
+      2
+     ]
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.0,
+     0.1,
+     0.2,
+     0.5
+    ],
+    "segments.q": [
+     37,
+     50
+    ],
+    "segments.r": [
+     29,
+     50
+    ]
+   },
+   "fallback": {
+    "segments": null
+   }
+  },
+  {
+   "name": "Q2_classperm",
+   "chain": "Q1",
+   "base": {
+    "segments": {
+     "type": "freq_classperm"
+    }
+   }
+  },
+  {
+   "name": "Q3_random",
+   "chain": "Q1",
+   "base": {
+    "segments": {
+     "type": "freq_random"
+    }
+   }
+  },
+  {
+   "name": "Q4",
+   "chain": "K1",
+   "base": {
+    "segments": {
+     "alpha_mod": "freq",
+     "sigmas": [
+      1,
+      2,
+      4
+     ]
+    }
+   }
+  },
+  {
+   "name": "Q4_shuffled",
+   "chain": "K1",
+   "base": {
+    "segments": {
+     "alpha_mod": "freq_shuffled",
+     "sigmas": [
+      1,
+      2,
+      4
+     ]
+    }
+   }
+  },
+  {
+   "name": "F1",
+   "chain": "A2",
+   "base": {
+    "anchor": {
+     "blocks": [
+      {
+       "type": "dct",
+       "layer": 9,
+       "kind": "radial",
+       "bands": [
+        0,
+        1,
+        2
+       ],
+       "k": 64
+      }
+     ]
+    }
+   },
+   "grid": {
+    "anchor.omega": [
+     0.0,
+     0.05,
+     0.1,
+     0.2,
+     0.3
+    ],
+    "anchor.temperature": [
+     0.1,
+     0.3,
+     1.0
+    ]
+   },
+   "fallback": {
+    "anchor.blocks": []
+   }
+  },
+  {
+   "name": "F2_blockdiag",
+   "chain": "F1",
+   "base": {
+    "anchor": {
+     "block_diag": true
+    }
+   }
+  },
+  {
+   "name": "F3_aug",
+   "chain": "F1",
+   "base": {
+    "anchor": {
+     "blocks": [
+      {
+       "type": "view",
+       "view": "flip",
+       "k": 96
+      },
+      {
+       "type": "view",
+       "view": "gray",
+       "k": 96
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "F4_noise",
+   "chain": "F1",
+   "base": {
+    "anchor": {
+     "blocks": [
+      {
+       "type": "noise",
+       "k": 192
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "F5_randband",
+   "chain": "F1",
+   "base": {
+    "anchor": {
+     "blocks": [
+      {
+       "type": "dct",
+       "layer": 9,
+       "kind": "random",
+       "bands": [
+        0,
+        1,
+        2
+       ],
+       "k": 64
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "F6_blurdiff",
+   "chain": "F1",
+   "base": {
+    "anchor": {
+     "blocks": [
+      {
+       "type": "blurdiff",
+       "sigma": 1,
+       "k": 64
+      },
+      {
+       "type": "blurdiff",
+       "sigma": 2,
+       "k": 64
+      },
+      {
+       "type": "blurdiff",
+       "sigma": 4,
+       "k": 64
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "F7_L6",
+   "chain": "F1",
+   "base": {
+    "anchor": {
+     "blocks": [
+      {
+       "type": "dct",
+       "layer": 6,
+       "kind": "radial",
+       "bands": [
+        0,
+        1,
+        2
+       ],
+       "k": 64
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "F8_L12",
+   "chain": "F1",
+   "base": {
+    "anchor": {
+     "blocks": [
+      {
+       "type": "dct",
+       "layer": 12,
+       "kind": "radial",
+       "bands": [
+        0,
+        1,
+        2
+       ],
+       "k": 64
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "R1",
+   "chain": "F1",
+   "base": {
+    "anchor": {
+     "eb": {
+      "lam": 0.5,
+      "topk": 5,
+      "tau": 16.0,
+      "eta": 1.0
+     }
+    }
+   },
+   "grid": {
+    "anchor.eb.lam": [
+     0.0,
+     0.25,
+     0.5,
+     1.0
+    ]
+   },
+   "fallback": {
+    "anchor.eb": null
+   }
+  },
+  {
+   "name": "AX_keyword",
+   "chain": "K0",
+   "base": {
+    "segments": {
+     "q": 37,
+     "r": 29,
+     "alpha": 0.2,
+     "tau": 22.0,
+     "sim": "text",
+     "type": "keyword",
+     "sigmas": [
+      1,
+      2,
+      4
+     ],
+     "bands": [
+      0,
+      1,
+      2
+     ]
+    }
+   }
+  },
+  {
+   "name": "AX_keyword_fdrcoord",
+   "chain": "K0",
+   "base": {
+    "segments": {
+     "q": 37,
+     "r": 29,
+     "alpha": 0.2,
+     "tau": 22.0,
+     "sim": "text",
+     "type": "keyword_fdr",
+     "sigmas": [
+      1,
+      2,
+      4
+     ],
+     "bands": [
+      0,
+      1,
+      2
+     ]
+    }
+   }
+  },
+  {
+   "name": "AX_keyword_random",
+   "chain": "K0",
+   "base": {
+    "segments": {
+     "q": 37,
+     "r": 29,
+     "alpha": 0.2,
+     "tau": 22.0,
+     "sim": "text",
+     "type": "keyword_random",
+     "sigmas": [
+      1,
+      2,
+      4
+     ],
+     "bands": [
+      0,
+      1,
+      2
+     ]
+    }
+   }
+  },
+  {
+   "name": "AX_freq",
+   "chain": "K0",
+   "base": {
+    "segments": {
+     "q": 37,
+     "r": 29,
+     "alpha": 0.2,
+     "tau": 22.0,
+     "sim": "text",
+     "type": "freq",
+     "sigmas": [
+      1,
+      2,
+      4
+     ],
+     "bands": [
+      0,
+      1,
+      2
+     ]
+    }
+   }
+  },
+  {
+   "name": "AX_freq_classperm",
+   "chain": "K0",
+   "base": {
+    "segments": {
+     "q": 37,
+     "r": 29,
+     "alpha": 0.2,
+     "tau": 22.0,
+     "sim": "text",
+     "type": "freq_classperm",
+     "sigmas": [
+      1,
+      2,
+      4
+     ],
+     "bands": [
+      0,
+      1,
+      2
+     ]
+    }
+   }
+  },
+  {
+   "name": "AX_freq_random",
+   "chain": "K0",
+   "base": {
+    "segments": {
+     "q": 37,
+     "r": 29,
+     "alpha": 0.2,
+     "tau": 22.0,
+     "sim": "text",
+     "type": "freq_random",
+     "sigmas": [
+      1,
+      2,
+      4
+     ],
+     "bands": [
+      0,
+      1,
+      2
+     ]
+    }
+   }
+  }
+ ]
+}

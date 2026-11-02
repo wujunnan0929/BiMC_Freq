@@ -1,0 +1,19 @@
+{
+ "description": "Tiny matrix for the CPU smoke run on the synthetic bank.",
+ "entries": [
+  {"name": "BiMC_ens", "base": {"ensemble": {}}},
+  {"name": "A1", "chain": "BiMC_ens", "base": {"anchor": {"blocks": []}},
+   "grid": {"anchor.omega": [0.0, 0.1, 0.3], "anchor.temperature": [0.3, 1.0]}, "fallback": {"anchor.omega": 0.0}},
+  {"name": "A2", "chain": "A1", "base": {}, "grid": {"anchor.kappa": [0.0, 0.5, 1.0]}, "fallback": {"anchor.kappa": 0.0}},
+  {"name": "K0", "chain": "A2", "base": {"holistic": {"donor": "text"}},
+   "grid": {"holistic.lam": [0.1, 0.3]}, "fallback": {"holistic.donor": "visual", "holistic.lam": 0.1, "holistic.tau": 16.0}},
+  {"name": "K1", "chain": "K0", "base": {"segments": {"type": "keyword", "q": 10, "r": 5}},
+   "grid": {"segments.alpha": [0.0, 0.2]}, "fallback": {"segments": null}},
+  {"name": "K2_random", "chain": "K1", "base": {"segments": {"type": "keyword_random"}}},
+  {"name": "Q1", "chain": "K0", "base": {"segments": {"type": "freq", "q": 8, "r": 5}},
+   "grid": {"segments.alpha": [0.0, 0.2]}, "fallback": {"segments": null}},
+  {"name": "F1", "chain": "A2", "base": {"anchor": {"blocks": [{"type": "dct", "layer": 6, "kind": "radial", "bands": [0, 1, 2], "k": 8}]}},
+   "grid": {"anchor.omega": [0.0, 0.1, 0.3]}, "fallback": {"anchor.blocks": []}},
+  {"name": "F5_randband", "chain": "F1", "base": {"anchor": {"blocks": [{"type": "dct", "layer": 6, "kind": "random", "bands": [0, 1, 2], "k": 8}]}}}
+ ]
+}

@@ -26,3 +26,6 @@ docs/*
 !docs/competitive_evidence_diagnostics.md
 shared_dictionary_group_report*
 tools/*.local.ps1
+
+# fdrfreq feature banks (large, regenerable)
+banks/
