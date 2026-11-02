@@ -243,6 +243,11 @@ class EpisodeRunner:
             elif typ == 'freq_classperm':
                 donor = np.random.RandomState(c_id * 31 + b).randint(self.nb)
                 segs.append(kw.topq_mask(deltas[donor, b] - common[b], q))
+            elif typ == 'freq_common':
+                ck = _key('freqcommon', s['sigmas'], b, q)
+                if ck not in self.cache:
+                    self.cache[ck] = kw.topq_mask(np.abs(deltas[:self.nb, b] - common[b]).mean(0), q)
+                segs.append(self.cache[ck])
             elif typ == 'freq_random':
                 r = np.random.RandomState(c_id * 131 + b + 7)
                 m = np.zeros(D, dtype=bool)

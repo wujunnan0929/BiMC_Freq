@@ -279,6 +279,15 @@
    }
   },
   {
+   "name": "Q5_common",
+   "chain": "Q1",
+   "base": {
+    "segments": {
+     "type": "freq_common"
+    }
+   }
+  },
+  {
    "name": "Q4",
    "chain": "K1",
    "base": {
@@ -631,6 +640,30 @@
      "tau": 22.0,
      "sim": "text",
      "type": "freq_random",
+     "sigmas": [
+      1,
+      2,
+      4
+     ],
+     "bands": [
+      0,
+      1,
+      2
+     ]
+    }
+   }
+  },
+  {
+   "name": "AX_freq_common",
+   "chain": "K0",
+   "base": {
+    "segments": {
+     "q": 37,
+     "r": 29,
+     "alpha": 0.2,
+     "tau": 22.0,
+     "sim": "text",
+     "type": "freq_common",
      "sigmas": [
       1,
       2,

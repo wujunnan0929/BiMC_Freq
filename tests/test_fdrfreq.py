@@ -308,3 +308,13 @@ def test_predictive_mode_matches_closed_form():
     assert np.allclose(got, want)
     lda = g.scores(q, kappa=0.0, mode='predictive', normalize_by_dim=False)
     assert np.array_equal(lda.argmax(1), g.scores(q, kappa=0.0, normalize_by_dim=False).argmax(1))
+
+
+def test_freq_common_segments_run_and_fall_back(bank, bench):
+    r = EpisodeRunner(bank, bench)
+    ens = {'ensemble': {}}
+    ref = r.run(ens)['last_pred']
+    off = r.run({**ens, 'segments': {'type': 'freq_common', 'alpha': 0.0, 'q': 8, 'r': 5}})['last_pred']
+    assert np.array_equal(ref, off)
+    on = r.run({**ens, 'segments': {'type': 'freq_common', 'alpha': 0.5, 'q': 8, 'r': 5}})
+    assert on['segment_stats']['segments_per_class'] == 3

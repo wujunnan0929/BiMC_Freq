@@ -36,6 +36,8 @@ Windows 下用 `fdrfreq\scripts\dev.ps1` 和 `final.ps1`，参数相同。
 | `python -m fdrfreq.run diagnose` | 频率掩码诊断、D0 top-k recall、D2 互补性、D3 信息上界 | 否 |
 | `python -m fdrfreq.run select` | 在伪增量 episode 上选参并锁定配置（`locked_*.json`） | 否 |
 | `python -m fdrfreq.run probe` | 协议保真度：固定参考配置在两种伪增量划分（random / contiguous）上的 base / novel 变化方向；加 `--with-test` 时并列给出基准上的同一组固定配置 | 仅 `--with-test` 时 |
+| `python -m fdrfreq.run frontier` | 以某个锁定配置为起点，按分解轴扫强度 α 与通道预算 q，输出 ΔLast / ΔBase / ΔNovel / HM 与实际改动的通道数（base–novel 权衡曲线） | 否 |
+| `python -m fdrfreq.run errconc` | 原型误差集中度：K-shot 原型误差落在频率掩码、借来的掩码、类无关掩码、随机掩码、关键词掩码中的占比 | 否 |
 | `python -m fdrfreq.run gates` | 根据 select / diagnose 输出给出各闸门的 PASS / FAIL | 否 |
 | `python -m fdrfreq.run evaluate` | 只接受 `locked_*.json`；文件被改过（hash 不符）或来自其他 bank 都会拒绝 | 是 |
 | `python -m fdrfreq.report` | 主表、与 anchor 的配对比较（bootstrap CI、seed 计数、fixed/broken、McNemar）、逐 session 表 | 读 evaluate 输出 |
@@ -50,7 +52,7 @@ Windows 下用 `fdrfreq\scripts\dev.ps1` 和 `final.ps1`，参数相同。
 | 基线 | ZS, ZS_desc, Proto, TEEN, FDR_tf_published, BiMC, BiMC_ens, LA | 零样本、原型、TEEN、FDR 免训练复现（发表超参）、BiMC、BiMC†、常数 logit 调整 |
 | 锚点 | A1, A2 | 池化类内协方差 GDA（只在 base 估计并冻结）与 BiMC† 融合；A2 加入 shot 数修正（debias / predictive 两种形式） |
 | FDR 阳性对照 | K0, K1, K1_fdrcoord, K2_random | K0：文本供体权重；K1：关键词分段（最终 CLIP 坐标）；K1_fdrcoord：FDR 原始坐标；K2：随机分段 |
-| 视觉频率 grounding | Q1, Q2_classperm, Q3_random, Q4, Q4_shuffled | Q1：模糊梯度通道掩码分段；Q2 / Q3：换类掩码 / 随机掩码对照；Q4：用频率设置关键词段的强度，Q4_shuffled 为打乱对照 |
+| 视觉频率 grounding | Q1, Q2_classperm, Q3_random, Q5_common, Q4, Q4_shuffled | Q1：模糊梯度通道掩码分段；Q2 / Q3 / Q5：换类掩码 / 随机掩码 / 基类平均的类无关掩码对照；Q4：用频率设置关键词段的强度，Q4_shuffled 为打乱对照 |
 | 频带信息 | F1–F8, R1 | F1：patch-DCT 频带块进入联合 GDA；F2：块对角；F3：增强视图；F4：噪声；F5：随机频带；F6：像素 DoG；F7 / F8：换层；R1：频带经验贝叶斯重组 |
 | 分解轴研究 | AX_* | 在 K0 之上以 FDR 发表强度（α=0.2、q=37、r=29、τ=22）固定比较六种分解轴，不经过选参，只用于分解轴表（T5） |
 
@@ -74,7 +76,7 @@ fdrfreq/
   synthetic.py  合成 bank（测试与冒烟用）
 ```
 
-`select` 和 `diagnose` 支持 `--split-mode random|contiguous`；`select` 支持 `--tolerance`，可统一覆盖矩阵里的 base / novel 容差。
+`select` 和 `diagnose` 支持 `--split-mode random|contiguous`；`select` 支持 `--tolerance`（统一覆盖 base / novel 容差）和 `--objective last|hm|avg`（选参目标）。
 
 ## 已知限制
 

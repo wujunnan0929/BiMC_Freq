@@ -235,3 +235,49 @@ Elsevier 的投稿常规材料：Highlights（3–5 条，每条不超过 85 个
 3. **建正式 bank，对 parity。** 正式 bank 建好后跑 `python -m fdrfreq.run parity --bank banks/cub200_vitb16 --seeds 1`，与 engine 的 fp32、`USING_ENSEMBLE=True` 结果逐 session 对比。
 4. **跑开发阶段。** `bash fdrfreq/scripts/dev.sh cub200 ../datasets 0`，看 `shot5/gates.txt` 与 `shot1/gates.txt`。
 5. **决策。** 按第 7 节冻结论文叙事和 Ours 的组成，然后再跑 final.sh。
+
+
+---
+
+## 12. 决策记录（2026-11-03，仅依据开发集与基线保真度检查）
+
+### 12.1 协议
+- **伪增量划分改为 contiguous。** 随机划分会把 CUB 的近缘鸟种拆到两边，使伪增量的 base / novel 偏差变成测试集的 3–5 倍；5-shot 时连方向都反了。contiguous 划分在 7 个固定参考配置上和测试集方向一致，Last 的增量也接近：GDA ω=0.05 为 +1.32 vs +1.00，K0 为 −0.53 vs −0.54。
+- **1-shot 的 K0 同样一致**：开发集 +1.63，测试集 +1.62。
+- **选参目标定为伪增量最后一个 session 的 HM，不设 base 容差。** 这条规则在看到候选结果之前确定。保真度检查只用固定的基线配置，论文 Implementation Details 中如实写明。
+
+### 12.2 开发集结论（CUB）
+
+| 结论 | 证据 |
+|---|---|
+| 5-shot：GDA 锚点有效 | A2 − BiMC† = +1.49 |
+| 5-shot：频率分段无显著作用 | Q1 − K0 = +0.26，未胜过 Q2 |
+| 1-shot：频率 grounding 分段有效 | Q1 − K0 = +1.93，− Q3（随机掩码）= +0.79，− Q2（借别类掩码）= +0.22 |
+| 1-shot：频率分段在 base–novel 权衡曲线上占优 | 同等 base 代价下，比随机掩码高 1–2pp novel，比关键词分段高 2–3.5pp novel |
+| 机制：1-shot 原型误差集中在对模糊敏感的通道 | 本类频率掩码覆盖 25.4% 的通道，捕获 41.8% 的误差（×1.65）；随机掩码 ×0.99；FDR 式关键词掩码 ×0.88，低于随机 |
+| 5-shot 误差仍集中（×1.46），但总量小，所以重组收益小 | 同上 |
+| 频率掩码的作用一大半来自"对模糊敏感的通道"这一共性，类特异只贡献一小部分 | 借别类掩码 ×1.32；本类掩码只比借别类的 Q2 高 0.22pp |
+| 频率作为额外特征块：负结果 | D3 全部为负，−1.5 ~ −2.7pp |
+| 频率作为文本属性：负结果 | 第一版报告 |
+| 频率掩码在 shot 之间不稳定 | 1-shot 稳定性 0.12 |
+| shot 修正 κ：两个 shot 下均被选为 0 | 记为负结果 |
+
+### 12.3 冻结的方法与论文叙事（叙事 A 的按 shot 版本）
+- **Ours = BiMC† + shot-aware GDA 锚点 + 文本供体整体收缩 + 视觉频率 grounding 分段重组。** 各组件强度按 shot 在开发集上选出：5-shot 时锚点开启、分段很弱；1-shot 时锚点被选为关闭、分段开启。对应锁定文件 `shot{1,5}_hm/locked_Q1.json`。
+- **核心论点。** 少样本原型的误差集中在随细节变化大的通道上。在这些通道上向基类借信息，优于随机通道和语义关键词通道。频率只作为视觉侧的测量进入方法，不依赖文本，也不作为额外特征。
+- **还需补的对照**：Q5_common（基类平均的类无关频率掩码，测"类特异"有多少贡献）和 AX_freq_common。
+
+### 12.4 剩余步骤
+1. **CUB 补跑新对照（只用开发集）。**
+   ```
+   select --entries Q5_common AX_freq_common --split-mode contiguous --objective hm --tolerance 100
+   ```
+   再跑 `frontier`，把 freq_common 也加进比较。
+2. **CIFAR-100 / miniImageNet：建库、parity、probe。** 按同一保真度规则选择划分方式，再按 HM 选参。
+3. **补基线**：ULA（按原文实现），HyCal（可选）。
+4. **跑测试集，只跑一次**：final 阶段评测下列锁定配置，5 个 seed。
+   - 基线：ZS、Proto、TEEN、FDR_tf_published、BiMC、BiMC_ens、LA
+   - 本文方法与对照：A1、A2、K0、K1、K1_fdrcoord、K2_random、Q1、Q2_classperm、Q3_random、Q5_common
+   - 分解轴研究：AX_*
+   - 频率特征块：F1、F3_aug、F4_noise、F5_randband
+5. **ViT-L/14 泛化**，以及把 errconc 和 frontier 画成图。

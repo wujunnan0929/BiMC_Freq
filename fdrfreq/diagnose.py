@@ -190,7 +190,8 @@ def error_concentration(bank, split_seeds=(2, 3, 4), n_sequences=5, shot=None, q
             masks['freq_own'] = np.logical_or.reduce([kw.topq_mask(deltas[j, b] - common[b], q) for b in range(len(sigmas))])
             donors = [np.random.RandomState(c * 31 + b).randint(r.nb) for b in range(len(sigmas))]
             masks['freq_classperm'] = np.logical_or.reduce([kw.topq_mask(deltas[d, b] - common[b], q) for b, d in enumerate(donors)])
-            masks['freq_base_common'] = kw.topq_mask(np.abs(deltas[:r.nb]).mean((0, 1)), int(masks['freq_own'].sum()))
+            masks['freq_common'] = np.logical_or.reduce([kw.topq_mask(np.abs(deltas[:r.nb, b] - common[b]).mean(0), q)
+                                                         for b in range(len(sigmas))])
             rr = np.random.RandomState(c * 131 + 7)
             rnd = np.zeros(bank.dim, bool)
             rnd[rr.choice(bank.dim, int(masks['freq_own'].sum()), replace=False)] = True

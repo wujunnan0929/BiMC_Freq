@@ -397,7 +397,7 @@ def main(argv=None):
     sp = sub.add_parser('frontier')
     common(sp)
     sp.add_argument('--base-locked', required=True, help='locked_*.json to start from (e.g. locked_K0.json)')
-    sp.add_argument('--axes', nargs='+', default=['freq', 'freq_classperm', 'freq_random', 'keyword',
+    sp.add_argument('--axes', nargs='+', default=['freq', 'freq_classperm', 'freq_common', 'freq_random', 'keyword',
                                                   'keyword_fdr', 'keyword_random'])
     sp.add_argument('--alphas', type=float, nargs='+', default=[0.05, 0.1, 0.2, 0.3, 0.5])
     sp.add_argument('--q', type=int, nargs='+', default=[50, 100, 150])
