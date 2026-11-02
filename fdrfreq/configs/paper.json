@@ -520,6 +520,323 @@
    }
   },
   {
+   "name": "M1",
+   "chain": "K0",
+   "note": "variance-guided segment recomposition: one base-only channel set (top-k pooled within-class variance), recomposed from segment-similar base prototypes",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "var",
+     "sim": "text",
+     "r": 29,
+     "tau": 22.0
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.1,
+     0.2,
+     0.3,
+     0.5,
+     0.7,
+     1.0
+    ],
+    "segments.k": [
+     0.05,
+     0.1,
+     0.15,
+     0.2,
+     0.3,
+     0.4
+    ]
+   },
+   "fallback": {
+    "segments": null
+   },
+   "include_fallback": true
+  },
+  {
+   "name": "M1_lowvar",
+   "chain": "M1",
+   "note": "same k as M1, channels ranked by lowvar; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "lowvar"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.1,
+     0.2,
+     0.3,
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M1_mag",
+   "chain": "M1",
+   "note": "same k as M1, channels ranked by mag; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "mag"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.1,
+     0.2,
+     0.3,
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M1_fisher",
+   "chain": "M1",
+   "note": "same k as M1, channels ranked by fisher; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "fisher"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.1,
+     0.2,
+     0.3,
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M1_freq",
+   "chain": "M1",
+   "note": "same k as M1, channels ranked by freq; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "freq"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.1,
+     0.2,
+     0.3,
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M1_ebratio",
+   "chain": "M1",
+   "note": "same k as M1, channels ranked by ebratio; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "ebratio"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.1,
+     0.2,
+     0.3,
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M1_random",
+   "chain": "M1",
+   "note": "same k as M1, random channels; alpha and draw re-tuned (best of 3 draws: conservative control)",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "random"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.1,
+     0.2,
+     0.3,
+     0.5,
+     0.7,
+     1.0
+    ],
+    "segments.seed": [
+     0,
+     1,
+     2
+    ]
+   }
+  },
+  {
+   "name": "M1_noholistic",
+   "chain": "M1",
+   "note": "w/o text-guided holistic step; alpha and k re-tuned",
+   "base": {
+    "holistic": null,
+    "segments": {
+     "type": "prior",
+     "rank": "var"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.1,
+     0.2,
+     0.3,
+     0.5,
+     0.7,
+     1.0
+    ],
+    "segments.k": [
+     0.05,
+     0.1,
+     0.15,
+     0.2,
+     0.3,
+     0.4
+    ]
+   },
+   "fallback": {
+    "segments": null
+   }
+  },
+  {
+   "name": "M1_global",
+   "chain": "M1",
+   "note": "donors ranked on the whole vector instead of inside the segment; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "scope": "global"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.1,
+     0.2,
+     0.3,
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M1_visualsim",
+   "chain": "M1",
+   "note": "donor similarity on visual prototypes instead of calibrated text; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "sim": "visual"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.1,
+     0.2,
+     0.3,
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M2_ebmask",
+   "chain": "K0",
+   "note": "shot-adaptive channel set: borrow channel j iff s_j^2(K) > c t_j^2 (empirical s^2); no k",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "ebmask",
+     "sim": "text",
+     "r": 29,
+     "tau": 22.0,
+     "s2": "empirical"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.1,
+     0.2,
+     0.3,
+     0.5,
+     0.7,
+     1.0
+    ],
+    "segments.c": [
+     0.25,
+     0.5,
+     1.0,
+     2.0,
+     4.0
+    ]
+   },
+   "fallback": {
+    "segments": null
+   },
+   "include_fallback": true
+  },
+  {
+   "name": "Q7e_eb",
+   "chain": "A2",
+   "note": "soft channel-wise EB with empirically measured K-shot variance",
+   "base": {
+    "holistic": null,
+    "segments": {
+     "type": "eb",
+     "s2": "empirical",
+     "sim": "text",
+     "tau": 22.0,
+     "r": 29
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.25,
+     0.5,
+     0.75,
+     1.0,
+     1.25,
+     1.5,
+     2.0
+    ],
+    "segments.tau": [
+     16.0,
+     22.0
+    ]
+   },
+   "fallback": {
+    "segments": null,
+    "holistic": {
+     "donor": "visual",
+     "lam": 0.1,
+     "tau": 16.0
+    }
+   },
+   "include_fallback": true
+  },
+  {
    "name": "Q4",
    "chain": "K1",
    "base": {

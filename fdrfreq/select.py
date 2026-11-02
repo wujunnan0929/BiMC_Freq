@@ -75,13 +75,16 @@ def dev_episodes(bank, split_seeds=(2, 3, 4), n_sequences=10, shot=None, split_m
 
 
 def evaluate_candidates(bank, episodes, configs):
-    """Return per-config arrays [n_episodes, 3] of (last, last_base, last_novel) + avg."""
+    """Per-config arrays [n_episodes, 6]: last, last_base, last_novel, avg, last_hm,
+    channels touched per novel class (0 without segment recomposition)."""
     out = [[] for _ in configs]
     for e in episodes:
         runner = EpisodeRunner(bank, e)
         for i, cfg in enumerate(configs):
-            r = runner.run(cfg)['summary']
-            out[i].append((r['last'], r['last_base'], r['last_novel'], r['avg'], r['last_hm']))
+            res = runner.run(cfg)
+            r, st = res['summary'], res.get('segment_stats') or {}
+            out[i].append((r['last'], r['last_base'], r['last_novel'], r['avg'], r['last_hm'],
+                           float(st.get('channels_touched', 0.0))))
     return [np.asarray(o, dtype=np.float64) for o in out]
 
 
@@ -101,7 +104,7 @@ def select(bank, entry, episodes, progress=None, tolerance=None, objective='last
         if fb is not None:
             ok = (m[1] >= fb[1] - tol) and (m[2] >= fb[2] - tol)
         rows.append({'params': params, 'last': m[0], 'last_base': m[1], 'last_novel': m[2],
-                     'avg': m[3], 'last_hm': m[4], 'per_split_last': per_split,
+                     'avg': m[3], 'last_hm': m[4], 'channels': m[5], 'per_split_last': per_split,
                      'feasible': bool(ok), 'hash': config_hash(cfg)})
     feasible = [i for i, r in enumerate(rows) if r['feasible']]
     if not feasible:

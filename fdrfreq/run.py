@@ -92,6 +92,8 @@ def cmd_select(a):
             chosen = next((c for c in rep['candidates'] if c['hash'] == rep['selected_hash']), None)
             if chosen:
                 msg += f" pseudo-last {chosen['last']:.2f} (base {chosen['last_base']:.2f}, novel {chosen['last_novel']:.2f})"
+                if chosen.get('channels'):
+                    msg += f" ch/class {chosen['channels']:.0f}"
         if fb:
             msg += f" | fallback {fb['last']:.2f}"
         print(msg, f"[{rep['seconds']:.1f}s]")
@@ -152,6 +154,7 @@ def _dev_metrics(out, name):
     fb = rep.get('fallback_metrics')
     if fb:
         return {'last': fb['last'], 'last_base': fb['last_base'], 'last_novel': fb['last_novel'],
+                'last_hm': fb.get('last_hm', float('nan')), 'channels': 0.0,
                 'per_split_last': None, 'params': 'fallback'}
     return None
 
@@ -160,7 +163,10 @@ def gate_report(out):
     """Development-only go/no-go verdicts (no test image is involved)."""
     m = {n: _dev_metrics(out, n) for n in ('BiMC_ens', 'A1', 'A2', 'K0', 'K1', 'K2_random', 'Q1',
                                            'Q6_union', 'Q6_random', 'Q6_var', 'Q6_mag', 'Q6_fisher',
-                                           'Q7_eb', 'Q7_uniform', 'Q7_shuffled',
+                                           'Q7_eb', 'Q7_uniform', 'Q7_shuffled', 'Q7e_eb',
+                                           'M1', 'M1_lowvar', 'M1_mag', 'M1_fisher', 'M1_freq', 'M1_ebratio',
+                                           'M1_random', 'M1_noholistic', 'M1_global', 'M1_visualsim',
+                                           'M2_ebmask',
                                            'Q2_classperm', 'Q3_random', 'Q4', 'Q4_shuffled', 'F1',
                                            'F3_aug', 'F4_noise', 'F5_randband', 'F6_blurdiff', 'R1')}
     diag = None
@@ -219,6 +225,34 @@ def gate_report(out):
         ok = v >= 0.3 and min(cs) >= 0.2
         add(f'G2 {meth} (vs {fb} >= +0.3, vs controls >= +0.2)', ok,
             f'vs {fb} {v:+.2f}; ' + ', '.join(f'vs {c} {x:+.2f}' for c, x in zip(ctrls, cs)))
+    # G3: variance-guided segment recomposition against matched-budget channel sets
+    v = d('M1', 'K0')
+    hard = ('M1_random', 'M1_lowvar', 'M1_fisher')
+    soft = ('M1_mag', 'M1_freq', 'M1_ebratio', 'Q6_var')
+    cs = [d('M1', c) for c in hard]
+    if v is None or any(c is None for c in cs):
+        add('G3 M1', None, 'missing')
+    else:
+        info = [f'vs {c} {d("M1", c):+.2f}' for c in soft if d('M1', c) is not None]
+        add('G3 M1 (vs K0 >= +0.3, vs random/lowvar/fisher >= +0.2)', v >= 0.3 and min(cs) >= 0.2,
+            f'vs K0 {v:+.2f} (HM {d("M1", "K0", "last_hm"):+.2f}, splits {splits_pos("M1", "K0")}); '
+            + ', '.join(f'vs {c} {x:+.2f}' for c, x in zip(hard, cs))
+            + ('; info ' + ', '.join(info) if info else ''))
+    comp = [(c, d('M1', c)) for c in ('M1_noholistic', 'M1_global', 'M1_visualsim')]
+    if all(x is not None for _, x in comp):
+        add('G3c M1 components (each removal costs >= +0.1)', min(x for _, x in comp) >= 0.1,
+            ', '.join(f'M1-{c} {x:+.2f}' for c, x in comp))
+    v = d('M2_ebmask', 'M1')
+    if v is not None:
+        ch = [(m.get(n) or {}).get('channels') for n in ('M1', 'M2_ebmask')]
+        chs = '' if None in ch else f' (channels/class M1 {ch[0]:.0f}, M2 {ch[1]:.0f})'
+        add('G4 shot-adaptive EB rule (M2 >= M1 - 0.1: prefer M2, no k)', v >= -0.1,
+            f'M2-M1 {v:+.2f}, M2-K0 {d("M2_ebmask", "K0"):+.2f}' + chs)
+    v = d('Q7e_eb', 'Q7_eb')
+    if v is not None:
+        add('G4b soft EB, measured K-shot variance (info)', None if d('Q7e_eb', 'M1') is None else d('Q7e_eb', 'M1') >= -0.1,
+            f'Q7e-Q7 {v:+.2f}, Q7e-K0 {d("Q7e_eb", "K0"):+.2f}, Q7e-M1 {d("Q7e_eb", "M1"):+.2f}'
+            if d('Q7e_eb', 'M1') is not None else f'Q7e-Q7 {v:+.2f}')
     lines = ['Development gates (pseudo-incremental, base training images only)']
     lines += [f'  [{s:4s}] {g}: {det}' for g, s, det in rows]
     return '\n'.join(lines)
@@ -292,11 +326,19 @@ def cmd_frontier(a):
           f"novel {rb['last_novel']:.2f} hm {rb['last_hm']:.2f}")
     rows = []
     for axis in a.axes:
-        qs = a.q if (axis.startswith('freq') or axis.endswith('_union')) else [a.q[0]]
+        prior = axis.startswith('prior:')
+        if prior:
+            qs = a.k
+        else:
+            qs = a.q if (axis.startswith('freq') or axis.endswith('_union')) else [a.q[0]]
         for q in qs:
             for alpha in a.alphas:
-                seg = {'type': axis, 'q': q, 'r': a.r, 'tau': a.tau, 'alpha': alpha, 'sim': 'text',
-                       'sigmas': [1, 2, 4], 'bands': [0, 1, 2]}
+                if prior:
+                    seg = {'type': 'prior', 'rank': axis.split(':', 1)[1], 'k': q, 'r': a.r, 'tau': a.tau,
+                           'alpha': alpha, 'sim': 'text', 'c': q, 's2': 'empirical'}
+                else:
+                    seg = {'type': axis, 'q': q, 'r': a.r, 'tau': a.tau, 'alpha': alpha, 'sim': 'text',
+                           'sigmas': [1, 2, 4], 'bands': [0, 1, 2]}
                 cfg = deep_merge(base, {'segments': seg})
                 S, cov = [], []
                 for r in runners:
@@ -310,7 +352,7 @@ def cmd_frontier(a):
                        'd_novel': m['last_novel'] - rb['last_novel'],
                        'channels': float(np.mean(cov)) if cov else 0.0}
                 rows.append(row)
-                print(f"{axis:16s} q{q:<4d} a{alpha:<5} ch {row['channels']:6.1f}  dLast {row['d_last']:+.2f} "
+                print(f"{axis:16s} q{q:<5} a{alpha:<5} ch {row['channels']:6.1f}  dLast {row['d_last']:+.2f} "
                       f"dBase {row['d_base']:+.2f} dNovel {row['d_novel']:+.2f} HM {m['last_hm']:.2f}")
     write_json(Path(a.out) / f'frontier_shot{a.shot or bank.inc_shot}.json', {'reference': rb, 'rows': rows})
 
@@ -324,8 +366,16 @@ def cmd_errconc(a):
         out[str(shot)] = res
         print(f'== {shot}-shot (pseudo-novel prototypes, q={a.q} per band)')
         for k, v in res.items():
-            print(f"  {k:18s} coverage {100 * v['coverage']:5.1f}%  error captured {100 * v['capture']:5.1f}%  "
+            if k.startswith('_'):
+                continue
+            print(f"  {k:22s} coverage {100 * v['coverage']:5.1f}%  error captured {100 * v['capture']:5.1f}%  "
                   f"concentration x{v['concentration']:.2f}")
+        print('  overlap (Jaccard, same size): ' + ', '.join(f'{k} {v:.2f}' for k, v in res['_overlap_jaccard'].items()))
+        cur = res['_capture_curve']
+        fr = list(next(iter(cur.values())))
+        print('  error captured vs channel budget: ' + ' '.join(f'{float(f):>6.2f}' for f in fr))
+        for n, row in cur.items():
+            print(f'    {n:8s}' + ' '.join(f'{100 * row[f]:5.1f}%' for f in fr))
     write_json(Path(a.out) / 'error_concentration.json', out)
 
 
@@ -406,6 +456,8 @@ def main(argv=None):
                                                   'keyword_fdr', 'keyword_random'])
     sp.add_argument('--alphas', type=float, nargs='+', default=[0.05, 0.1, 0.2, 0.3, 0.5])
     sp.add_argument('--q', type=int, nargs='+', default=[50, 100, 150])
+    sp.add_argument('--k', type=float, nargs='+', default=[0.05, 0.1, 0.2, 0.3, 0.4],
+                    help="channel budget (fraction of d) for 'prior:<rank>' axes; for prior:ebmask it is c")
     sp.add_argument('--r', type=int, default=29)
     sp.add_argument('--tau', type=float, default=22.0)
     sp.add_argument('--split-seeds', type=int, nargs='+', default=[2, 3, 4])

@@ -165,7 +165,8 @@ def print_summary(rep):
 
 
 def error_concentration(bank, split_seeds=(2, 3, 4), n_sequences=5, shot=None, q=50,
-                        sigmas=(1, 2, 4), split_mode='contiguous', m=8):
+                        sigmas=(1, 2, 4), split_mode='contiguous', m=8,
+                        curve_k=(0.05, 0.1, 0.15, 0.2, 0.3, 0.4)):
     """Where does a K-shot prototype's error live?
 
     For every pseudo-novel class, err_j = (p_K[j] - p_all[j])^2, with p_K the unit
@@ -173,11 +174,15 @@ def error_concentration(bank, split_seeds=(2, 3, 4), n_sequences=5, shot=None, q
     channel mask g: capture = sum_g err / sum err, coverage = |g| / d,
     concentration = capture / coverage (1 = no better than random channels).
     A mask that concentrates the error is a mask worth recomposing.
+    Also returns the Jaccard overlap of the same-size class-agnostic masks and a
+    capture-vs-budget curve per ranking (random = the diagonal, oracle = each
+    class's own largest-error channels, an unusable upper bound).
     """
     from .pipeline import EpisodeRunner
     eps = dev_episodes(bank, split_seeds, n_sequences, shot, split_mode)
     F, y = bank.feat('train', 'orig'), bank.labels('train')
-    acc = {}
+    acc, overlap, curve = {}, {}, {}
+    prior_ep = None
     for e in eps:
         r = EpisodeRunner(bank, e)
         deltas, common = r.freq_deltas(sigmas)
@@ -193,15 +198,26 @@ def error_concentration(bank, split_seeds=(2, 3, 4), n_sequences=5, shot=None, q
             masks['freq_common'] = np.logical_or.reduce([kw.topq_mask(np.abs(deltas[:r.nb, b] - common[b]).mean(0), q)
                                                          for b in range(len(sigmas))])
             k_c = int(masks['freq_common'].sum())
-            if 'prior_stats' not in locals() or prior_ep is not e:
+            if prior_ep is not e:
                 Xb, yb = r.sup_feat[0], r.sup_lab[0]
                 from .linalg import within_class_centered as _wcc
                 Xc, _ = _wcc(Xb, yb, r.base_cls)
                 wvar = (Xc ** 2).mean(0)
                 prior_stats = {'wvar': wvar, 'mag': np.abs(Xb).mean(0),
                                'fisher': r.raw_mean[:r.nb].var(0) / np.maximum(wvar, 1e-12)}
+                A = np.stack([np.abs(deltas[:r.nb, b] - common[b]).mean(0) for b in range(len(sigmas))])
+                prior_stats['freq'] = (A / np.maximum(A.mean(1, keepdims=True), 1e-12)).max(0)
                 prior_ep = e
+                sm = {n: kw.topq_mask(prior_stats[n], k_c) for n in ('wvar', 'mag', 'fisher')}
+                sm['freq_common'] = masks['freq_common']
+                for a_ in sm:
+                    for b_ in sm:
+                        if a_ < b_:
+                            inter = np.logical_and(sm[a_], sm[b_]).sum()
+                            union = np.logical_or(sm[a_], sm[b_]).sum()
+                            overlap.setdefault(f'{a_}~{b_}', []).append(inter / max(union, 1))
             masks['within_var_same_size'] = kw.topq_mask(prior_stats['wvar'], k_c)
+            masks['low_var_same_size'] = kw.topk_signed(-prior_stats['wvar'], k_c)
             masks['magnitude_same_size'] = kw.topq_mask(prior_stats['mag'], k_c)
             masks['fisher_same_size'] = kw.topq_mask(prior_stats['fisher'], k_c)
             rr = np.random.RandomState(c * 131 + 7)
@@ -216,9 +232,21 @@ def error_concentration(bank, split_seeds=(2, 3, 4), n_sequences=5, shot=None, q
                 cov = g.mean()
                 cap = err[g].sum() / max(err.sum(), 1e-18)
                 acc.setdefault(k, []).append((cap, cov, cap / max(cov, 1e-12)))
+            tot = max(err.sum(), 1e-18)
+            for frac in curve_k:
+                kk = max(1, int(round(frac * bank.dim)))
+                for n, score in (('var', prior_stats['wvar']), ('lowvar', -prior_stats['wvar']),
+                                 ('mag', prior_stats['mag']), ('fisher', prior_stats['fisher']),
+                                 ('freq', prior_stats['freq'])):
+                    curve.setdefault(n, {}).setdefault(frac, []).append(err[kw.topk_signed(score, kk)].sum() / tot)
+                curve.setdefault('random', {}).setdefault(frac, []).append(kk / bank.dim)
+                # oracle: the class's own largest-error channels (upper bound, not usable)
+                curve.setdefault('oracle', {}).setdefault(frac, []).append(np.sort(err)[::-1][:kk].sum() / tot)
     out = {}
     for k, v in acc.items():
         v = np.asarray(v)
         out[k] = {'capture': float(v[:, 0].mean()), 'coverage': float(v[:, 1].mean()),
                   'concentration': float(v[:, 2].mean()), 'n': int(len(v))}
+    out['_overlap_jaccard'] = {k: float(np.mean(v)) for k, v in overlap.items()}
+    out['_capture_curve'] = {n: {str(f): float(np.mean(v)) for f, v in d.items()} for n, d in curve.items()}
     return out

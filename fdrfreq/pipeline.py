@@ -9,7 +9,11 @@ Every method in the paper is a configuration of ``run_episode``:
     holistic     novel-prototype shrinkage; donor 'visual' (BiMC/TEEN) or
                  'text' (FDR code's first step)
     segments     segment-wise recomposition; 'keyword', 'keyword_fdr',
-                 'keyword_random', 'freq', 'freq_classperm', 'freq_random'
+                 'keyword_random', 'freq', 'freq_classperm', 'freq_random',
+                 'prior' (one class-agnostic channel set ranked by a base-only
+                 statistic: within-class variance, its reverse, magnitude,
+                 Fisher ratio, random, frequency sensitivity, EB ratio, or the
+                 shot-adaptive EB rule) and 'eb' (soft channel-wise EB)
     anchor       pooled-within-class GDA on CLS features or on CLS + extra
                  blocks (patch DCT bands, augmentation/noise controls), fused
                  with the reference probabilities
@@ -77,11 +81,14 @@ def ula_adjust(z, nb, tau, lam, T, a, tth):
     return z
 
 UNION_TYPES = ('freq_union', 'var_union', 'mag_union', 'fisher_union', 'random_union')
+PRIOR_RANKS = ('var', 'lowvar', 'mag', 'fisher', 'random', 'freq', 'ebratio', 'ebmask')
 
 SEGMENT_DEFAULTS = {'type': 'keyword', 'q': 50, 'r': 29, 'alpha': 0.2, 'tau': 22.0,
                     'sim': 'text', 'm': 8, 'min_df': 2, 'max_df': 0.3,
                     'sigmas': [1, 2, 4], 'bands': [0, 1, 2], 'alpha_bands': None,
-                    'alpha_mod': None, 'seed': 0}
+                    'alpha_mod': None, 'seed': 0,
+                    'rank': 'var', 'k': 0.15, 'scope': 'segment', 'c': 1.0, 's2': 'analytic',
+                    'draws': 8}
 
 ANCHOR_DEFAULTS = {'blocks': [], 'kappa': 0.0, 'kappa_mode': 'debias', 'omega': 0.2, 'temperature': 0.3,
                    'fusion': 'prob', 'shrink': 'lw', 'ridge': 0.0, 'block_diag': False,
@@ -223,20 +230,14 @@ class EpisodeRunner:
         h, s = c['holistic'], c['segments']
         return bool((h and h.get('donor') == 'text') or (s and s.get('sim') == 'text'))
 
-    def _eb(self, P, nov, s, tc, base_vis):
-        """Channel-wise empirical-Bayes recomposition (shot-aware, closed form).
+    def _eb_stats(self, s, tc, base_vis):
+        """Base-only statistics shared by the EB variants.
 
-        Each novel prototype p_hat (K shots) is pulled toward a base-donor estimate
-        d (text-similarity weighted base prototypes, as in K0) channel by channel:
-            p_j <- p_hat_j + rho_j (d_j - p_hat_j),
-            rho_j = lam * s_j^2 / (s_j^2 + t_j^2),  s_j^2 = sigma_j^2 / (K g^2),
-        sigma_j^2: pooled within-class variance of channel j on base images,
-        g^2: mean squared norm of base class means (unit-normalisation factor),
-        t_j^2: donor error variance, estimated leave-one-out on the base classes
-        and corrected for their own sampling noise. Few shots or noisy channels
-        borrow more; rho does not need a per-shot strength. eb_uniform replaces
-        rho by its per-class mean (= holistic shrinkage); eb_shuffled permutes rho
-        across channels (same distribution, wrong channels).
+        sig2: pooled within-class variance per channel (raw features);
+        g2:   mean squared norm of base class means;
+        t2:   donor error variance per channel, leave-one-out on base classes
+              (text- or visual-similarity weighted top-r donors, as for novel
+              classes), corrected for the base prototypes' own sampling noise.
         """
         nb = self.nb
         ek = _key('ebstats', s['sim'], s['tau'], s['r'], getattr(self, '_cur_lam_t', None))
@@ -256,7 +257,54 @@ class EpisodeRunner:
             noise_b = sig2 / (self.counts[:nb].mean() * g2)
             t2 = np.maximum(E2 - noise_b, 1e-3 * E2.mean())
             self.cache[ek] = (sig2, g2, t2, src)
-        sig2, g2, t2, src = self.cache[ek]
+        return self.cache[ek]
+
+    def _shot_var(self, K, mode, draws, sig2, g2):
+        """s_j^2(K): per-channel squared error of a K-shot unit prototype.
+
+        'analytic' = sig2 / (K g2). 'empirical' measures it directly on the base
+        classes: draw K of a base class's training images, normalise their mean
+        and compare with the normalised mean of all its images (fixed seed).
+        """
+        K = int(K)
+        if mode == 'analytic':
+            return sig2 / (max(K, 1) * g2)
+        if mode != 'empirical':
+            raise ValueError('s2 must be analytic or empirical')
+        k = _key('shotvar', K, int(draws))
+        if k not in self.cache:
+            X, y = self.sup_feat[0], self.sup_lab[0]
+            rng = np.random.RandomState(9173 + K)
+            acc, n = np.zeros(X.shape[1]), 0
+            for b, c in enumerate(self.base_cls):
+                Xb = X[y == c]
+                if len(Xb) <= K:
+                    continue
+                ref = self.raw_proto[b]
+                for _ in range(int(draws)):
+                    pick = rng.choice(len(Xb), K, replace=False)
+                    acc += (l2n(Xb[pick].mean(0)) - ref) ** 2
+                    n += 1
+            if n == 0:
+                raise ValueError(f'no base class has more than {K} images')
+            self.cache[k] = acc / n
+        return self.cache[k]
+
+    def _eb(self, P, nov, s, tc, base_vis):
+        """Channel-wise empirical-Bayes recomposition (shot-aware, closed form).
+
+        Each novel prototype p_hat (K shots) is pulled toward a base-donor estimate
+        d (text-similarity weighted base prototypes, as in K0) channel by channel:
+            p_j <- p_hat_j + rho_j (d_j - p_hat_j),
+            rho_j = lam * s_j^2 / (s_j^2 + t_j^2),
+        s_j^2: sampling variance of a K-shot unit prototype (``_shot_var``),
+        t_j^2: donor error variance (``_eb_stats``). Few shots or noisy channels
+        borrow more; rho does not need a per-shot strength. eb_uniform replaces
+        rho by its per-class mean (= holistic shrinkage); eb_shuffled permutes rho
+        across channels (same distribution, wrong channels).
+        """
+        nb = self.nb
+        sig2, g2, t2, src = self._eb_stats(s, tc, base_vis)
         Sn = l2n(src[nov]) @ l2n(src[:nb]).T
         r = int(min(s['r'], nb))
         out = np.zeros((len(nov), base_vis.shape[1]))
@@ -265,7 +313,7 @@ class EpisodeRunner:
         for i, j in enumerate(nov):
             top = np.argpartition(-Sn[i], r - 1)[:r]
             d = l2n(softmax(s['tau'] * Sn[i, top]) @ base_vis[top])
-            s2 = sig2 / (self.counts[j] * g2)
+            s2 = self._shot_var(self.counts[j], s['s2'], s['draws'], sig2, g2)
             rho = np.clip(s['alpha'] * s2 / (s2 + t2), 0.0, 1.0)
             if s['type'] == 'eb_uniform':
                 rho = np.full_like(rho, rho.mean())
@@ -277,6 +325,60 @@ class EpisodeRunner:
         self._seg_cov = [float(x) for x in (R.mean(1) * base_vis.shape[1])]
         self._seg_n = [1] * len(nov)
         return out
+
+    def _prior_mask(self, s, K, tc, base_vis):
+        """One channel set shared by all novel classes, from base data only.
+
+        rank   var     top-k pooled within-class variance (where a K-shot mean errs most)
+               lowvar  bottom-k (direction control)
+               mag     top-k mean |activation|;  fisher  top-k between/within ratio
+               random  k random channels;  freq  top-k blur sensitivity (base average)
+               ebratio top-k of s_j^2 / t_j^2 (EB noise-to-donor-error ratio)
+               ebmask  every channel with s_j^2(K) > c * t_j^2: borrow where the
+                       donor is expected to beat the K-shot mean (no k; shrinks
+                       as K grows)
+        k < 1 is a fraction of the dimension.
+        """
+        rank = s['rank']
+        if rank not in PRIOR_RANKS:
+            raise ValueError('unknown prior rank ' + str(rank))
+        D = self.bank.dim
+        k = int(round(s['k'] * D)) if s['k'] < 1 else int(s['k'])
+        k = max(1, min(k, D))
+        ck = _key('pmask', rank, k, s['seed'], s['sigmas'], s['bands'], s['c'], s['s2'], s['draws'],
+                  int(K) if rank == 'ebmask' else None,
+                  (s['sim'], s['tau'], s['r'], getattr(self, '_cur_lam_t', None))
+                  if rank.startswith('eb') else None)
+        if ck in self.cache:
+            return self.cache[ck]
+        X, y = self.sup_feat[0], self.sup_lab[0]
+        m = np.zeros(D, dtype=bool)
+        if rank in ('var', 'lowvar', 'fisher'):
+            Xc, _ = within_class_centered(X, y, self.base_cls)
+            wvar = (Xc ** 2).mean(0)
+            if rank == 'var':
+                m = kw.topq_mask(wvar, k)
+            elif rank == 'lowvar':
+                m = kw.topk_signed(-wvar, k)
+            else:
+                m = kw.topq_mask(self.raw_mean[:self.nb].var(0) / np.maximum(wvar, 1e-12), k)
+        elif rank == 'mag':
+            m = kw.topq_mask(np.abs(X).mean(0), k)
+        elif rank == 'random':
+            m[np.random.RandomState(12345 + int(s['seed'])).choice(D, k, replace=False)] = True
+        elif rank == 'freq':
+            deltas, common = self.freq_deltas(s['sigmas'])
+            A = np.stack([np.abs(deltas[:self.nb, b] - common[b]).mean(0) for b in s['bands']])
+            m = kw.topq_mask((A / np.maximum(A.mean(1, keepdims=True), 1e-12)).max(0), k)
+        else:
+            sig2, g2, t2, _ = self._eb_stats(s, tc, base_vis)
+            if rank == 'ebratio':
+                m = kw.topq_mask(sig2 / t2, k)
+            else:
+                s2 = self._shot_var(K, s['s2'], s['draws'], sig2, g2)
+                m = s2 > float(s['c']) * t2
+        self.cache[ck] = m
+        return m
 
     def _segments(self, P, nov, s, tc, base_vis):
         out = P[nov].copy()
@@ -296,6 +398,8 @@ class EpisodeRunner:
                 rand_lib = lib.random_twin(seed=s['seed'])
         elif typ.startswith('freq') or typ in UNION_TYPES:
             deltas, common = self.freq_deltas(s['sigmas'])
+        elif typ == 'prior':
+            pass
         else:
             raise ValueError('unknown segment type ' + typ)
         fine = None
@@ -310,12 +414,14 @@ class EpisodeRunner:
                 segs = [use.masks[w] for w in words]
             elif typ in UNION_TYPES:
                 segs = [self._channel_prior(s, typ, deltas, common)]
+            elif typ == 'prior':
+                segs = [self._prior_mask(s, self.counts[j], tc, base_vis)]
             else:
                 segs = self._freq_segments(j, c_id, s, deltas, common)
             if s['alpha_mod'] and lib is not None:
                 alphas = frequency_alpha(s['alpha'], segs, fine[j], out[i], s['alpha_mod'],
                                          seed=c_id + 1)
-            elif s['alpha_bands'] is not None and lib is None and typ not in UNION_TYPES:
+            elif s['alpha_bands'] is not None and lib is None and typ not in UNION_TYPES + ('prior',):
                 alphas = [s['alpha_bands'][b] for b in s['bands']]
             else:
                 alphas = [s['alpha']] * len(segs)
@@ -325,7 +431,8 @@ class EpisodeRunner:
                 src_n, src_b = out[i], base_vis
             self._seg_cov.append(int(np.logical_or.reduce(segs).sum()) if segs else 0)
             self._seg_n.append(len(segs))
-            out[i] = segment_step(out[i], segs, src_n, src_b, base_vis, s['r'], alphas, s['tau'])
+            out[i] = segment_step(out[i], segs, src_n, src_b, base_vis, s['r'], alphas, s['tau'],
+                                  scope=s['scope'])
         return out
 
     def _channel_prior(self, s, typ, deltas, common):

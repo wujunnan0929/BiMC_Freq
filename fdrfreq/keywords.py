@@ -66,6 +66,15 @@ def topq_mask(score, q):
     return m
 
 
+def topk_signed(score, k):
+    """Top-k by signed score (topq_mask ranks by magnitude)."""
+    score = np.asarray(score, dtype=np.float64)
+    k = int(min(k, score.shape[-1]))
+    m = np.zeros(score.shape[-1], dtype=bool)
+    m[np.argpartition(-score, k - 1)[:k]] = True
+    return m
+
+
 class KeywordLibrary:
     def __init__(self, masks, df, n_base, coord, q):
         self.masks, self.df, self.n_base = masks, df, n_base

@@ -36,8 +36,8 @@ Windows 下用 `fdrfreq\scripts\dev.ps1` 和 `final.ps1`，参数相同。
 | `python -m fdrfreq.run diagnose` | 频率掩码诊断、D0 top-k recall、D2 互补性、D3 信息上界 | 否 |
 | `python -m fdrfreq.run select` | 在伪增量 episode 上选参并锁定配置（`locked_*.json`） | 否 |
 | `python -m fdrfreq.run probe` | 协议保真度：固定参考配置在两种伪增量划分（random / contiguous）上的 base / novel 变化方向；加 `--with-test` 时并列给出基准上的同一组固定配置 | 仅 `--with-test` 时 |
-| `python -m fdrfreq.run frontier` | 以某个锁定配置为起点，按分解轴扫强度 α 与通道预算 q，输出 ΔLast / ΔBase / ΔNovel / HM 与实际改动的通道数（base–novel 权衡曲线） | 否 |
-| `python -m fdrfreq.run errconc` | 原型误差集中度：K-shot 原型误差落在频率掩码、借来的掩码、类无关掩码、随机掩码、关键词掩码中的占比 | 否 |
+| `python -m fdrfreq.run frontier` | 以某个锁定配置为起点，按分解轴扫强度 α 与通道预算 q，输出 ΔLast / ΔBase / ΔNovel / HM 与实际改动的通道数（base–novel 权衡曲线）；`--axes prior:var prior:random …` 配合 `--k` 扫按基类统计量排序的通道集合（`prior:ebmask` 时 `--k` 为阈值 c） | 否 |
+| `python -m fdrfreq.run errconc` | 原型误差集中度：K-shot 原型误差落在频率掩码、借来的掩码、类无关掩码（方差 / 低方差 / 幅值 / Fisher）、随机掩码、关键词掩码中的占比；同尺寸掩码的 Jaccard 重叠；捕获率–通道预算曲线（含 oracle 上界） | 否 |
 | `python -m fdrfreq.run gates` | 根据 select / diagnose 输出给出各闸门的 PASS / FAIL | 否 |
 | `python -m fdrfreq.run evaluate` | 只接受 `locked_*.json`；文件被改过（hash 不符）或来自其他 bank 都会拒绝 | 是 |
 | `python -m fdrfreq.report` | 主表、与 anchor 的配对比较（bootstrap CI、seed 计数、fixed/broken、McNemar）、逐 session 表 | 读 evaluate 输出 |
@@ -83,3 +83,11 @@ fdrfreq/
 - **extract.py 尚未在 GPU 上跑过。** 本次开发环境装不了 torch。脚本在第一个 batch 上做了两项自检，任一项不一致都会直接报错：自定义前向必须与 `encode_image` 一致；torch 版 DCT 频带能量必须与 numpy 参考实现一致。建议先加 `--limit-per-class 3` 跑一个冒烟 bank。
 - **support 来源。** support 下标直接取自各 seed 的 `DatasetManager`，并核对复刻采样器与之是否一致，结果记录在 `meta.json` 的 `support_replica_matches_engine`。标准 CEC 划分可通过 `--standard-manifest` 存为 seed 0。
 - **FDR 原始坐标掩码。** 只在文本宽度等于嵌入维度时可用（ViT-B/16、ViT-L/14 满足）。
+
+### 方差引导分段重组（M1 / M2，§12.7）
+`segments.type = "prior"`：所有新类共用一个只由基类数据决定的通道集合。
+- `rank`：`var`（合并类内方差 top-k，本文方法）、`lowvar`、`mag`、`fisher`、`random`、`freq`、`ebratio`、`ebmask`。
+- `k`：通道预算，<1 时为维度比例。
+- `scope`：`segment`（供体在通道内排序，默认）或 `global`。
+- `ebmask` 用 `c` 和 `s2="empirical"`：当实测 K-shot 误差 s_j²(K) > c·t_j² 时借用通道 j。
+`segments.type = "eb"` 的 `s2` 可取 `analytic`（σ²/(K g²)）或 `empirical`（在基类上抽 K 张图实测）。

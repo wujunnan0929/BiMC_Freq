@@ -370,3 +370,58 @@ def test_eb_recomposition_is_shot_aware_and_falls_back(bank, bench):
     one = EpisodeRunner(bank, benchmark_episode(bank, 1, shot=1))
     s1 = one.run({**raw, 'segments': {'type': 'eb', 'alpha': 1.0, 'r': 5}})['segment_stats']['channels_touched']
     assert s1 > on['segment_stats']['channels_touched']   # fewer shots -> borrow more
+
+
+def test_prior_channel_sets_matched_size_and_direction(bank, bench):
+    r = EpisodeRunner(bank, bench)
+    r.run({'ensemble': {}})
+    from fdrfreq.pipeline import SEGMENT_DEFAULTS, deep_merge
+    base_vis = r.raw_proto[:r.nb]
+    tc = l2n(r.text_cal(0.5))
+    r._cur_lam_t = 0.5
+    k = 0.2
+    want = int(round(k * bank.dim))
+    masks = {}
+    for rank in ('var', 'lowvar', 'mag', 'fisher', 'random', 'freq', 'ebratio'):
+        s = deep_merge(SEGMENT_DEFAULTS, {'type': 'prior', 'rank': rank, 'k': k, 'r': 5})
+        masks[rank] = r._prior_mask(s, 5, tc, base_vis)
+        assert masks[rank].dtype == bool and masks[rank].sum() == want, rank
+    assert not (masks['var'] & masks['lowvar']).any()
+    # the prior 'var' rank with the union size reproduces the earlier var_union control
+    s_u = deep_merge(SEGMENT_DEFAULTS, {'type': 'var_union', 'q': 6, 'r': 5})
+    deltas, common = r.freq_deltas(s_u['sigmas'])
+    U = r._channel_prior(s_u, 'var_union', deltas, common)
+    s_p = deep_merge(SEGMENT_DEFAULTS, {'type': 'prior', 'rank': 'var', 'k': int(U.sum()), 'r': 5})
+    assert np.array_equal(U, r._prior_mask(s_p, 5, tc, base_vis))
+
+
+def test_prior_segments_fall_back_and_scope_matters(bank, bench):
+    r = EpisodeRunner(bank, bench)
+    k0 = {'ensemble': {}, 'holistic': {'donor': 'text', 'lam': 0.3, 'tau': 16.0}}
+    ref = r.run(k0)['last_pred']
+    seg = {'type': 'prior', 'rank': 'var', 'k': 0.2, 'r': 5}
+    off = r.run({**k0, 'segments': {**seg, 'alpha': 0.0}})['last_pred']
+    assert np.array_equal(ref, off)
+    on = r.run({**k0, 'segments': {**seg, 'alpha': 1.0}})
+    assert on['segment_stats']['channels_touched'] == int(round(0.2 * bank.dim))
+    P_seg = r.vis_cal(r.run({**k0, 'segments': {**seg, 'alpha': 1.0}})['config'])
+    P_glb = r.vis_cal(r.run({**k0, 'segments': {**seg, 'alpha': 1.0, 'scope': 'global'}})['config'])
+    nov = slice(r.nb, None)
+    assert np.allclose(np.linalg.norm(P_glb[nov], axis=1), 1.0)
+    assert not np.allclose(P_seg[nov], P_glb[nov])
+
+
+def test_empirical_shot_variance_and_ebmask_shrink_with_shots(bank):
+    from fdrfreq.pipeline import SEGMENT_DEFAULTS, deep_merge
+    one = EpisodeRunner(bank, benchmark_episode(bank, 1, shot=1))
+    s = deep_merge(SEGMENT_DEFAULTS, {'type': 'prior', 'rank': 'ebmask', 's2': 'empirical', 'c': 1.0, 'r': 5})
+    one._cur_lam_t = 0.5
+    tc = l2n(one.text_cal(0.5))
+    sig2, g2, t2, _ = one._eb_stats(s, tc, one.raw_proto[:one.nb])
+    v1 = one._shot_var(1, 'empirical', 8, sig2, g2)
+    v5 = one._shot_var(5, 'empirical', 8, sig2, g2)
+    assert v1.sum() > 2.0 * v5.sum()
+    assert np.array_equal(v1, one._shot_var(1, 'empirical', 8, sig2, g2))   # deterministic
+    m1 = one._prior_mask(s, 1, tc, one.raw_proto[:one.nb])
+    m5 = one._prior_mask(s, 5, tc, one.raw_proto[:one.nb])
+    assert m1.sum() >= m5.sum()
