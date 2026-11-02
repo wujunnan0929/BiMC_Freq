@@ -281,3 +281,13 @@ Elsevier 的投稿常规材料：Highlights（3–5 条，每条不超过 85 个
    - 分解轴研究：AX_*
    - 频率特征块：F1、F3_aug、F4_noise、F5_randband
 5. **ViT-L/14 泛化**，以及把 errconc 和 frontier 画成图。
+
+### 12.5 补充（2026-11-03 凌晨）
+- **frontier 结果（1-shot，起点 K0_hm）。** q 和 α 相同时，基类平均的类无关频率通道（freq_common）≥ 本类掩码 > 借别类掩码 > 随机掩码。在 q=50、α=1 下 ΔLast 依次为 +2.06 / +1.92 / +1.71 / +1.11。通道越少越好（q50 > q100 > q150）。关键词分段（通道随机）在这个起点上全部为负。
+- **方法候选简化为 Q6_union。** 每个频段取基类平均下最敏感的前 q 个通道，各频段取并集，得到一个与类别无关的通道集，所有新类共用。它只在 base 阶段需要模糊视图，增量阶段零额外前向。
+- **审稿人最可能的质疑及对应对照：是否只是"高方差通道"？** 加入同大小的类内方差通道（Q6_var）、激活幅值通道（Q6_mag）、Fisher 判别通道（Q6_fisher）、随机通道（Q6_random），频段消融为 Q6_band_fine / mid / coarse。errconc 也报告这三类通道的误差集中度。
+- **ULA 基线。** 按原文 Algorithm 1 与官方 `adaptive_logit_adjust` 实现（`pipeline.ula_adjust`，单元测试与逐样本参考实现一致）。作为插件分两种方式使用：
+  - ULA_published：保留官方默认超参，它们原本是为 SAVC 的余弦 logits 调的；
+  - ULA：在同一 base-only 协议上重选 τ / λ / tth / T。
+  
+  另有 Ours_ULA_Q1 与 Ours_ULA_Q6，用来检验 ULA 与本文方法是否互补。

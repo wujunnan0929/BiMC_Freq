@@ -43,7 +43,40 @@ DEFAULTS = {
     'segments': None,
     'anchor': None,
     'novel_bias': 0.0,
+    'ula': None,
 }
+
+ULA_DEFAULTS = {'tau': 0.04, 'lam': 0.4, 'T': 0.25, 'a': 8.0, 'tth': 0.06}
+
+
+def ula_adjust(z, nb, tau, lam, T, a, tth):
+    """Uncertainty-guided Logit Adjustment (Woo et al., CVPR 2026 Findings, Alg. 1).
+
+    Only queries whose top-1 class is a base class, whose top-2 class is an
+    incremental class and whose top-1/top-2 margin is below tau are changed:
+    Delta = lam * clip((tau - m)/tau, 0, 1) * sigmoid(a (H_base/log C_b - tth)),
+    top-1 logit -= Delta, top-2 logit += Delta. Mirrors the official
+    adaptive_logit_adjust in github.com/sungwon-woo/ULA (models/savc/helper.py).
+    """
+    z = np.array(z, dtype=np.float64, copy=True)
+    if z.shape[1] <= nb or lam == 0:
+        return z
+    top2 = np.argsort(-z, axis=1)[:, :2]
+    rows = np.arange(len(z))
+    i1, i2 = top2[:, 0], top2[:, 1]
+    z1, z2 = z[rows, i1], z[rows, i2]
+    m = z1 - z2
+    h = np.clip((tau - m) / max(tau, 1e-6), 0.0, None)
+    pb = softmax(z[:, :nb] / max(T, 1e-6), axis=1)
+    H = -(pb * np.log(np.maximum(pb, 1e-12))).sum(1) / np.log(nb)
+    w = 1.0 / (1.0 + np.exp(-a * (H - tth)))
+    mask = (i1 < nb) & (i2 >= nb) & (m < tau)
+    d = lam * h * w
+    z[rows[mask], i1[mask]] -= d[mask]
+    z[rows[mask], i2[mask]] += d[mask]
+    return z
+
+UNION_TYPES = ('freq_union', 'var_union', 'mag_union', 'fisher_union', 'random_union')
 
 SEGMENT_DEFAULTS = {'type': 'keyword', 'q': 50, 'r': 29, 'alpha': 0.2, 'tau': 22.0,
                     'sim': 'text', 'm': 8, 'min_df': 2, 'max_df': 0.3,
@@ -78,6 +111,8 @@ def resolve_config(cfg, bank):
         c['segments'] = deep_merge(SEGMENT_DEFAULTS, c['segments'])
     if c['anchor'] is not None:
         c['anchor'] = deep_merge(ANCHOR_DEFAULTS, c['anchor'])
+    if c['ula'] is not None:
+        c['ula'] = deep_merge(ULA_DEFAULTS, c['ula'])
     return c
 
 
@@ -201,7 +236,7 @@ class EpisodeRunner:
             lib = self.cache[lk]
             if typ == 'keyword_random':
                 rand_lib = lib.random_twin(seed=s['seed'])
-        elif typ.startswith('freq'):
+        elif typ.startswith('freq') or typ in UNION_TYPES:
             deltas, common = self.freq_deltas(s['sigmas'])
         else:
             raise ValueError('unknown segment type ' + typ)
@@ -215,12 +250,14 @@ class EpisodeRunner:
                 words = kw.class_keywords(self.bank, c_id, lib, m=s['m'])
                 use = rand_lib if rand_lib is not None else lib
                 segs = [use.masks[w] for w in words]
+            elif typ in UNION_TYPES:
+                segs = [self._channel_prior(s, typ, deltas, common)]
             else:
                 segs = self._freq_segments(j, c_id, s, deltas, common)
             if s['alpha_mod'] and lib is not None:
                 alphas = frequency_alpha(s['alpha'], segs, fine[j], out[i], s['alpha_mod'],
                                          seed=c_id + 1)
-            elif s['alpha_bands'] is not None and lib is None:
+            elif s['alpha_bands'] is not None and lib is None and typ not in UNION_TYPES:
                 alphas = [s['alpha_bands'][b] for b in s['bands']]
             else:
                 alphas = [s['alpha']] * len(segs)
@@ -232,6 +269,41 @@ class EpisodeRunner:
             self._seg_n.append(len(segs))
             out[i] = segment_step(out[i], segs, src_n, src_b, base_vis, s['r'], alphas, s['tau'])
         return out
+
+    def _channel_prior(self, s, typ, deltas, common):
+        """One class-agnostic channel set shared by all novel classes (base-only).
+
+        freq_union: union over the chosen bands of the top-q channels of the
+        base-averaged |Delta_k - common_k|. The controls take the same number k
+        of channels ranked by within-class variance (var_union), mean absolute
+        activation (mag_union), Fisher ratio (fisher_union) or at random.
+        """
+        ck = _key('prior', typ, s['sigmas'], s['bands'], s['q'], s['seed'])
+        if ck in self.cache:
+            return self.cache[ck]
+        U = np.logical_or.reduce([kw.topq_mask(np.abs(deltas[:self.nb, b] - common[b]).mean(0), s['q'])
+                                  for b in s['bands']])
+        k = int(U.sum())
+        X, y = self.sup_feat[0], self.sup_lab[0]
+        if typ == 'freq_union':
+            m = U
+        elif typ in ('var_union', 'fisher_union'):
+            Xc, _ = within_class_centered(X, y, self.base_cls)
+            wvar = (Xc ** 2).mean(0)
+            if typ == 'var_union':
+                m = kw.topq_mask(wvar, k)
+            else:
+                bvar = self.raw_mean[:self.nb].var(0)
+                m = kw.topq_mask(bvar / np.maximum(wvar, 1e-12), k)
+        elif typ == 'mag_union':
+            m = kw.topq_mask(np.abs(X).mean(0), k)
+        elif typ == 'random_union':
+            m = np.zeros(self.bank.dim, dtype=bool)
+            m[np.random.RandomState(12345 + int(s['seed'])).choice(self.bank.dim, k, replace=False)] = True
+        else:
+            raise ValueError(typ)
+        self.cache[ck] = m
+        return m
 
     def _freq_segments(self, j, c_id, s, deltas, common):
         q, D = int(s['q']), self.bank.dim
@@ -419,6 +491,8 @@ class EpisodeRunner:
             if c['novel_bias']:
                 z = z.copy()
                 z[:, self.nb:] += c['novel_bias']
+            if c['ula'] is not None and t > 0:
+                z = ula_adjust(z, self.nb, **c['ula'])
             pred = self.all_cls[:self.n_cols[t]][np.argmax(z, axis=1)]
             labels = self.q_lab[pos]
             per_session.append(session_metrics(pred, labels, self.base_cls))

@@ -318,3 +318,40 @@ def test_freq_common_segments_run_and_fall_back(bank, bench):
     assert np.array_equal(ref, off)
     on = r.run({**ens, 'segments': {'type': 'freq_common', 'alpha': 0.5, 'q': 8, 'r': 5}})
     assert on['segment_stats']['segments_per_class'] == 3
+
+
+def test_channel_prior_controls_have_matched_size(bank, bench):
+    r = EpisodeRunner(bank, bench)
+    base = {'ensemble': {}}
+    sizes = {}
+    for t in ('freq_union', 'var_union', 'mag_union', 'fisher_union', 'random_union'):
+        res = r.run({**base, 'segments': {'type': t, 'alpha': 0.5, 'q': 6, 'r': 5}})
+        sizes[t] = res['segment_stats']['channels_touched']
+        assert res['segment_stats']['segments_per_class'] == 1
+        off = r.run({**base, 'segments': {'type': t, 'alpha': 0.0, 'q': 6, 'r': 5}})['last_pred']
+        assert np.array_equal(off, r.run(base)['last_pred'])
+    assert len(set(sizes.values())) == 1
+
+
+def test_ula_matches_algorithm_1():
+    from fdrfreq.pipeline import ula_adjust
+    r = np.random.RandomState(0)
+    z = r.randn(200, 12) * 0.05
+    nb, tau, lam, T, a, tth = 8, 0.04, 0.4, 0.25, 8.0, 0.06
+    got = ula_adjust(z, nb, tau, lam, T, a, tth)
+    want = z.copy()
+    for n in range(len(z)):
+        order = np.argsort(-z[n])
+        c1, c2 = order[0], order[1]
+        m = z[n, c1] - z[n, c2]
+        if c1 >= nb or c2 < nb or m >= tau:
+            continue
+        h = min(max((tau - m) / tau, 0), 1)
+        p = np.exp(z[n, :nb] / T - (z[n, :nb] / T).max())
+        p /= p.sum()
+        H = -(p * np.log(p)).sum() / np.log(nb)
+        d = lam * h / (1 + np.exp(-a * (H - tth)))
+        want[n, c1] -= d
+        want[n, c2] += d
+    assert np.allclose(got, want)
+    assert np.array_equal(ula_adjust(z, nb, tau, 0.0, T, a, tth), z)

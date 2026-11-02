@@ -1,5 +1,5 @@
 {
- "description": "Paper experiment matrix. Run entries in order; 'chain' entries start from the locked configuration of the named entry in the same output directory. Dataset defaults (beta, ensemble alpha) come from the bank meta. Grid values go from weakest to strongest so ties keep the weaker setting. Matched controls (no grid) reuse the locked hyper-parameters of the method they control. AX_* entries compare decomposition axes at FDR's published strength (alpha 0.2, q 37, r 29, tau 22) on top of K0, independent of what the selection chose; they feed the axis table (T5) only.",
+ "description": "Paper experiment matrix. Run entries in order; 'chain' entries start from the locked configuration of the named entry in the same output directory. Dataset defaults (beta, ensemble alpha) come from the bank meta. Grid values go from weakest to strongest so ties keep the weaker setting. Matched controls (no grid) reuse the locked hyper-parameters of the method they control. AX_* entries compare decomposition axes at FDR's published strength (alpha 0.2, q 37, r 29, tau 22) on top of K0, independent of what the selection chose; they feed the axis table (T5) only. ULA (Woo et al., CVPR 2026 Findings) is applied to the final log-scores of the method it is chained to; ULA_published keeps the official defaults (tuned for SAVC cosine logits), ULA re-selects tau/lam/tth/T on the same base-only protocol as every other entry.",
  "entries": [
   {
    "name": "ZS",
@@ -91,6 +91,58 @@
    },
    "fallback": {
     "novel_bias": 0.0
+   }
+  },
+  {
+   "name": "ULA_published",
+   "chain": "BiMC_ens",
+   "base": {
+    "ula": {
+     "tau": 0.04,
+     "lam": 0.4,
+     "T": 0.25,
+     "a": 8.0,
+     "tth": 0.06
+    }
+   }
+  },
+  {
+   "name": "ULA",
+   "chain": "BiMC_ens",
+   "base": {
+    "ula": {
+     "a": 8.0
+    }
+   },
+   "grid": {
+    "ula.tau": [
+     0.005,
+     0.01,
+     0.02,
+     0.04,
+     0.08,
+     0.16,
+     0.32
+    ],
+    "ula.lam": [
+     0.04,
+     0.1,
+     0.4,
+     1.0
+    ],
+    "ula.tth": [
+     0.06,
+     0.5,
+     0.8,
+     0.95
+    ],
+    "ula.T": [
+     0.25,
+     1.0
+    ]
+   },
+   "fallback": {
+    "ula": null
    }
   },
   {
@@ -284,6 +336,117 @@
    "base": {
     "segments": {
      "type": "freq_common"
+    }
+   }
+  },
+  {
+   "name": "Q6_union",
+   "chain": "K0",
+   "base": {
+    "segments": {
+     "type": "freq_union",
+     "sim": "text",
+     "sigmas": [
+      1,
+      2,
+      4
+     ],
+     "bands": [
+      0,
+      1,
+      2
+     ],
+     "r": 29,
+     "tau": 22.0
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.0,
+     0.1,
+     0.2,
+     0.3,
+     0.5,
+     0.7,
+     1.0
+    ],
+    "segments.q": [
+     25,
+     37,
+     50,
+     75
+    ]
+   },
+   "fallback": {
+    "segments": null
+   }
+  },
+  {
+   "name": "Q6_random",
+   "chain": "Q6_union",
+   "base": {
+    "segments": {
+     "type": "random_union"
+    }
+   }
+  },
+  {
+   "name": "Q6_var",
+   "chain": "Q6_union",
+   "base": {
+    "segments": {
+     "type": "var_union"
+    }
+   }
+  },
+  {
+   "name": "Q6_mag",
+   "chain": "Q6_union",
+   "base": {
+    "segments": {
+     "type": "mag_union"
+    }
+   }
+  },
+  {
+   "name": "Q6_fisher",
+   "chain": "Q6_union",
+   "base": {
+    "segments": {
+     "type": "fisher_union"
+    }
+   }
+  },
+  {
+   "name": "Q6_band_fine",
+   "chain": "Q6_union",
+   "base": {
+    "segments": {
+     "bands": [
+      0
+     ]
+    }
+   }
+  },
+  {
+   "name": "Q6_band_mid",
+   "chain": "Q6_union",
+   "base": {
+    "segments": {
+     "bands": [
+      1
+     ]
+    }
+   }
+  },
+  {
+   "name": "Q6_band_coarse",
+   "chain": "Q6_union",
+   "base": {
+    "segments": {
+     "bands": [
+      2
+     ]
     }
    }
   },
@@ -675,6 +838,84 @@
       2
      ]
     }
+   }
+  },
+  {
+   "name": "Ours_ULA_Q1",
+   "chain": "Q1",
+   "base": {
+    "ula": {
+     "a": 8.0
+    }
+   },
+   "grid": {
+    "ula.tau": [
+     0.005,
+     0.01,
+     0.02,
+     0.04,
+     0.08,
+     0.16,
+     0.32
+    ],
+    "ula.lam": [
+     0.04,
+     0.1,
+     0.4,
+     1.0
+    ],
+    "ula.tth": [
+     0.06,
+     0.5,
+     0.8,
+     0.95
+    ],
+    "ula.T": [
+     0.25,
+     1.0
+    ]
+   },
+   "fallback": {
+    "ula": null
+   }
+  },
+  {
+   "name": "Ours_ULA_Q6",
+   "chain": "Q6_union",
+   "base": {
+    "ula": {
+     "a": 8.0
+    }
+   },
+   "grid": {
+    "ula.tau": [
+     0.005,
+     0.01,
+     0.02,
+     0.04,
+     0.08,
+     0.16,
+     0.32
+    ],
+    "ula.lam": [
+     0.04,
+     0.1,
+     0.4,
+     1.0
+    ],
+    "ula.tth": [
+     0.06,
+     0.5,
+     0.8,
+     0.95
+    ],
+    "ula.T": [
+     0.25,
+     1.0
+    ]
+   },
+   "fallback": {
+    "ula": null
    }
   }
  ]

@@ -159,6 +159,7 @@ def _dev_metrics(out, name):
 def gate_report(out):
     """Development-only go/no-go verdicts (no test image is involved)."""
     m = {n: _dev_metrics(out, n) for n in ('BiMC_ens', 'A1', 'A2', 'K0', 'K1', 'K2_random', 'Q1',
+                                           'Q6_union', 'Q6_random', 'Q6_var', 'Q6_mag', 'Q6_fisher',
                                            'Q2_classperm', 'Q3_random', 'Q4', 'Q4_shuffled', 'F1',
                                            'F3_aug', 'F4_noise', 'F5_randband', 'F6_blurdiff', 'R1')}
     diag = None
@@ -205,6 +206,7 @@ def gate_report(out):
             add('G1 information bound (stand-alone joint GDA)', ok,
                 f'{k} {b["delta_vs_cls"]:+.2f} (splits+ {b["splits_positive"]}), best control {ctrl:+.2f}')
     for meth, fb, ctrls in (('Q1', 'K0', ('Q2_classperm', 'Q3_random')),
+                            ('Q6_union', 'K0', ('Q6_random', 'Q6_var', 'Q6_mag', 'Q6_fisher')),
                             ('Q4', 'K1', ('Q4_shuffled',)),
                             ('F1', 'A2', ('F3_aug', 'F4_noise', 'F5_randband'))):
         v = d(meth, fb)
@@ -288,7 +290,7 @@ def cmd_frontier(a):
           f"novel {rb['last_novel']:.2f} hm {rb['last_hm']:.2f}")
     rows = []
     for axis in a.axes:
-        qs = a.q if axis.startswith('freq') else [a.q[0]]
+        qs = a.q if (axis.startswith('freq') or axis.endswith('_union')) else [a.q[0]]
         for q in qs:
             for alpha in a.alphas:
                 seg = {'type': axis, 'q': q, 'r': a.r, 'tau': a.tau, 'alpha': alpha, 'sim': 'text',
@@ -397,7 +399,8 @@ def main(argv=None):
     sp = sub.add_parser('frontier')
     common(sp)
     sp.add_argument('--base-locked', required=True, help='locked_*.json to start from (e.g. locked_K0.json)')
-    sp.add_argument('--axes', nargs='+', default=['freq', 'freq_classperm', 'freq_common', 'freq_random', 'keyword',
+    sp.add_argument('--axes', nargs='+', default=['freq_union', 'var_union', 'mag_union', 'fisher_union',
+                                                  'random_union', 'freq', 'freq_classperm', 'freq_common', 'freq_random', 'keyword',
                                                   'keyword_fdr', 'keyword_random'])
     sp.add_argument('--alphas', type=float, nargs='+', default=[0.05, 0.1, 0.2, 0.3, 0.5])
     sp.add_argument('--q', type=int, nargs='+', default=[50, 100, 150])

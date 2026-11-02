@@ -192,6 +192,18 @@ def error_concentration(bank, split_seeds=(2, 3, 4), n_sequences=5, shot=None, q
             masks['freq_classperm'] = np.logical_or.reduce([kw.topq_mask(deltas[d, b] - common[b], q) for b, d in enumerate(donors)])
             masks['freq_common'] = np.logical_or.reduce([kw.topq_mask(np.abs(deltas[:r.nb, b] - common[b]).mean(0), q)
                                                          for b in range(len(sigmas))])
+            k_c = int(masks['freq_common'].sum())
+            if 'prior_stats' not in locals() or prior_ep is not e:
+                Xb, yb = r.sup_feat[0], r.sup_lab[0]
+                from .linalg import within_class_centered as _wcc
+                Xc, _ = _wcc(Xb, yb, r.base_cls)
+                wvar = (Xc ** 2).mean(0)
+                prior_stats = {'wvar': wvar, 'mag': np.abs(Xb).mean(0),
+                               'fisher': r.raw_mean[:r.nb].var(0) / np.maximum(wvar, 1e-12)}
+                prior_ep = e
+            masks['within_var_same_size'] = kw.topq_mask(prior_stats['wvar'], k_c)
+            masks['magnitude_same_size'] = kw.topq_mask(prior_stats['mag'], k_c)
+            masks['fisher_same_size'] = kw.topq_mask(prior_stats['fisher'], k_c)
             rr = np.random.RandomState(c * 131 + 7)
             rnd = np.zeros(bank.dim, bool)
             rnd[rr.choice(bank.dim, int(masks['freq_own'].sum()), replace=False)] = True
