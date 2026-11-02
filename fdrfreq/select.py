@@ -65,10 +65,10 @@ def config_hash(cfg):
     return hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:16]
 
 
-def dev_episodes(bank, split_seeds=(2, 3, 4), n_sequences=10, shot=None):
+def dev_episodes(bank, split_seeds=(2, 3, 4), n_sequences=10, shot=None, split_mode='random'):
     eps = []
     for s in split_seeds:
-        for e in pseudo_episodes(bank, s, n_sequences=n_sequences, shot=shot):
+        for e in pseudo_episodes(bank, s, n_sequences=n_sequences, shot=shot, split_mode=split_mode):
             check_episode(e, bank)
             eps.append(e)
     return eps
@@ -85,12 +85,12 @@ def evaluate_candidates(bank, episodes, configs):
     return [np.asarray(o, dtype=np.float64) for o in out]
 
 
-def select(bank, entry, episodes, progress=None):
+def select(bank, entry, episodes, progress=None, tolerance=None):
     t0 = time.time()
     cands, fallback = expand_grid(entry)
     configs = [c for _, c in cands] + ([fallback] if fallback is not None else [])
     scores = evaluate_candidates(bank, episodes, configs)
-    tol = float(entry.get('tolerance', 0.2))
+    tol = float(tolerance if tolerance is not None else entry.get('tolerance', 0.2))
     split_ids = np.array([e.meta['split_seed'] for e in episodes])
     rows = []
     fb = scores[-1].mean(0) if fallback is not None else None
@@ -117,6 +117,7 @@ def select(bank, entry, episodes, progress=None):
                                                      'last_novel': fb[2], 'avg': fb[3]},
         'candidates': rows, 'tolerance': tol,
         'dev_protocol': {'split_seeds': sorted(set(split_ids.tolist())),
+                         'split_mode': episodes[0].meta.get('split_mode', 'random'),
                          'n_episodes': len(episodes),
                          'shot': episodes[0].meta['shot'], 'way': episodes[0].meta['way']},
         'bank': bank_fingerprint(bank), 'dataset': bank.meta.get('dataset'),

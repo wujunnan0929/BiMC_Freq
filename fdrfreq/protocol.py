@@ -88,7 +88,7 @@ def benchmark_episode(bank, seed, shot=None, use_stored=True):
 
 
 def pseudo_episodes(bank, split_seed, n_sequences=10, shot=None, way=None,
-                    base_fraction=0.5, query_fraction=0.2):
+                    base_fraction=0.5, query_fraction=0.2, split_mode='random'):
     """Base-only pseudo-incremental episodes (never touch test images).
 
     The base classes are split once per ``split_seed`` into A (pseudo-base) and
@@ -97,6 +97,11 @@ def pseudo_episodes(bank, split_seed, n_sequences=10, shot=None, way=None,
     of ``way`` classes and draws ``shot`` supports per V class; V queries are
     other training rows of V, capped at the A per-class query count so base
     and novel queries are balanced as on the real test sets.
+
+    split_mode='random' draws A/V at random. split_mode='contiguous' keeps the
+    dataset's class order (A = first half of the base classes), mimicking how
+    the real benchmark puts a contiguous block of classes into the novel
+    sessions (for CUB-200 this keeps bird families together).
     """
     shot = bank.inc_shot if shot is None else int(shot)
     way = bank.num_inc if way is None else int(way)
@@ -105,7 +110,12 @@ def pseudo_episodes(bank, split_seed, n_sequences=10, shot=None, way=None,
     rng = np.random.RandomState(10007 * int(split_seed) + 17)
     perm = rng.permutation(base)
     n_a = int(round(base_fraction * len(base)))
-    A, V = np.sort(perm[:n_a]), np.sort(perm[n_a:])
+    if split_mode == 'contiguous':
+        A, V = base[:n_a], base[n_a:]
+    elif split_mode == 'random':
+        A, V = np.sort(perm[:n_a]), np.sort(perm[n_a:])
+    else:
+        raise ValueError('split_mode must be random or contiguous')
     fit_rows, a_query = [], []
     per_class_q = []
     for c in A:
@@ -143,6 +153,7 @@ def pseudo_episodes(bank, split_seed, n_sequences=10, shot=None, way=None,
                                 query_split='train',
                                 meta={'split_seed': int(split_seed), 'sequence': s,
                                       'shot': shot, 'way': way, 'kind': 'pseudo',
+                                      'split_mode': split_mode,
                                       'A': A.tolist(), 'V': V.tolist()}))
     return episodes
 

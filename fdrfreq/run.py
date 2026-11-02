@@ -73,7 +73,7 @@ def cmd_select(a):
     bank = load_bank(a.bank)
     entries, _ = load_matrix(a.matrix)
     names = a.entries or list(entries)
-    episodes = sel.dev_episodes(bank, a.split_seeds, a.sequences, a.shot)
+    episodes = sel.dev_episodes(bank, a.split_seeds, a.sequences, a.shot, a.split_mode)
     print(f'{len(episodes)} pseudo-incremental episodes (base training images only)')
     out = Path(a.out)
     for name in names:
@@ -81,7 +81,7 @@ def cmd_select(a):
         if 'chain' in entry:
             locked = json.loads((out / f"locked_{entry['chain']}.json").read_text(encoding='utf-8'))
             entry = sel.chain(entry, locked)
-        rep = sel.select(bank, entry, episodes)
+        rep = sel.select(bank, entry, episodes, tolerance=a.tolerance)
         lk = sel.lock(rep)
         write_json(out / f'select_{name}.json', rep)
         write_json(out / f'locked_{name}.json', lk)
@@ -135,7 +135,7 @@ def cmd_diagnose(a):
     from .diagnose import run_diagnostics
     bank = load_bank(a.bank)
     rep = run_diagnostics(bank, split_seeds=a.split_seeds, n_sequences=a.sequences, shot=a.shot,
-                          q=a.q, sigmas=a.sigmas)
+                          q=a.q, sigmas=a.sigmas, split_mode=a.split_mode)
     write_json(Path(a.out) / f'diagnostics_shot{a.shot or bank.inc_shot}.json', rep)
     from .diagnose import print_summary
     print_summary(rep)
@@ -226,6 +226,50 @@ def cmd_gates(a):
     Path(a.dir, 'gates.txt').write_text(text, encoding='utf-8')
 
 
+PROBE_CONFIGS = {
+    'BiMC': {},
+    'BiMC_ens': {'ensemble': {}},
+    'GDA_only': {'anchor': {'omega': 1.0, 'fusion': 'gda_only', 'temperature': 1.0}},
+    'GDA_w0.05_T1': {'ensemble': {}, 'anchor': {'omega': 0.05, 'temperature': 1.0}},
+    'GDA_w0.1_T1': {'ensemble': {}, 'anchor': {'omega': 0.1, 'temperature': 1.0}},
+    'GDA_w0.2_T0.3': {'ensemble': {}, 'anchor': {'omega': 0.2, 'temperature': 0.3}},
+    'K0_lam0.2': {'ensemble': {}, 'holistic': {'donor': 'text', 'lam': 0.2, 'tau': 16.0}},
+}
+
+
+def cmd_probe(a):
+    """Protocol fidelity: do fixed reference configs move base/novel the same way on
+    pseudo episodes (both split modes) as on the benchmark? No selection happens here."""
+    from .metrics import error_types
+    bank = load_bank(a.bank)
+    out = {}
+    sources = [('random', None), ('contiguous', None)] + ([('benchmark', None)] if a.with_test else [])
+    for mode, _ in sources:
+        if mode == 'benchmark':
+            eps = [benchmark_episode(bank, s, shot=a.shot) for s in (1, 2, 3)]
+        else:
+            eps = sel.dev_episodes(bank, a.split_seeds, a.sequences, a.shot, mode)
+        rows = {}
+        runners = [EpisodeRunner(bank, e) for e in eps]
+        for name, cfg in PROBE_CONFIGS.items():
+            S, E = [], []
+            for r, e in zip(runners, eps):
+                res = r.run(cfg)
+                S.append(res['summary'])
+                E.append(error_types(res['last_pred'], res['last_labels'], e.classes[0]))
+            rows[name] = {k: float(np.mean([s[k] for s in S])) for k in ('last', 'last_base', 'last_novel')}
+            rows[name].update({k: float(np.mean([x[k] for x in E])) for k in E[0]})
+        out[mode] = rows
+        print(f'== {mode} ({len(eps)} episodes)')
+        ref = rows['BiMC_ens']
+        for name, v in rows.items():
+            print(f"  {name:14s} last {v['last']:6.2f} ({v['last'] - ref['last']:+.2f})  "
+                  f"base {v['last_base']:6.2f} ({v['last_base'] - ref['last_base']:+.2f})  "
+                  f"novel {v['last_novel']:6.2f} ({v['last_novel'] - ref['last_novel']:+.2f})  "
+                  f"n->b {v['novel_to_base']:5.1f} b->n {v['base_to_novel']:5.1f}")
+    write_json(Path(a.out) / f'probe_shot{a.shot or bank.inc_shot}.json', out)
+
+
 def cmd_smoke(a):
     from .synthetic import make_bank
     from .bank import save_bank
@@ -265,6 +309,8 @@ def main(argv=None):
     sp.add_argument('--entries', nargs='*')
     sp.add_argument('--split-seeds', type=int, nargs='+', default=[2, 3, 4])
     sp.add_argument('--sequences', type=int, default=10)
+    sp.add_argument('--split-mode', default='random', choices=('random', 'contiguous'))
+    sp.add_argument('--tolerance', type=float, help='override every entry tolerance (pp)')
     sp.set_defaults(func=cmd_select)
 
     sp = sub.add_parser('evaluate')
@@ -280,7 +326,16 @@ def main(argv=None):
     sp.add_argument('--sequences', type=int, default=5)
     sp.add_argument('--q', type=int, default=50)
     sp.add_argument('--sigmas', type=float, nargs='+', default=[1, 2, 4])
+    sp.add_argument('--split-mode', default='random', choices=('random', 'contiguous'))
     sp.set_defaults(func=cmd_diagnose)
+
+    sp = sub.add_parser('probe')
+    common(sp)
+    sp.add_argument('--split-seeds', type=int, nargs='+', default=[2, 3, 4])
+    sp.add_argument('--sequences', type=int, default=5)
+    sp.add_argument('--with-test', action='store_true',
+                    help='also score the same fixed reference configs on the benchmark (seeds 1-3)')
+    sp.set_defaults(func=cmd_probe)
 
     sp = sub.add_parser('gates')
     sp.add_argument('--dir', required=True)

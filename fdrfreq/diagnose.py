@@ -60,8 +60,8 @@ def _rep_transform(bank, rep, fit_rows, fit_lab, base_cls):
 
 
 def run_diagnostics(bank, split_seeds=(2, 3, 4), n_sequences=5, shot=None, q=50,
-                    sigmas=(1, 2, 4)):
-    eps = dev_episodes(bank, split_seeds, n_sequences, shot)
+                    sigmas=(1, 2, 4), split_mode='random'):
+    eps = dev_episodes(bank, split_seeds, n_sequences, shot, split_mode)
     ytr = bank.labels('train')
     rep = {'dataset': bank.meta.get('dataset'), 'n_episodes': len(eps), 'q': q,
            'sigmas': list(sigmas), 'dim': bank.dim}
