@@ -442,3 +442,53 @@ def test_donor_fraction_and_full_replacement(bank, bench):
         w = softmax(22.0 * (base_vis.shape[0] and (tc[:r.nb] @ tc[j]) /
                             (np.linalg.norm(tc[:r.nb], axis=1) * np.linalg.norm(tc[j]))))
         assert np.allclose(P[j], l2n(w @ base_vis), atol=1e-10)
+
+
+def test_visual_donor_full_replacement_is_exact(bank, bench):
+    r = EpisodeRunner(bank, bench)
+    plain = r.vis_cal(r.run({'ensemble': {}, 'holistic': None})['config'])
+    cfg = {'ensemble': {}, 'holistic': None,
+           'segments': {'type': 'prior', 'rank': 'var', 'k': 1.0, 'alpha': 1.0, 'scope': 'global',
+                        'sim': 'visual', 'r': 1.0, 'tau': 16.0}}
+    P = r.vis_cal(r.run(cfg)['config'])
+    base_vis = l2n(r.raw_proto[:r.nb])
+    for j in range(r.nb, len(r.all_cls)):
+        w = softmax(16.0 * (base_vis @ l2n(plain[j])))
+        assert np.allclose(P[j], l2n(w @ base_vis), atol=1e-10)
+
+
+def test_m4a_family_is_well_formed_and_frontier_reference_is_the_locked_config(bank, tmp_path):
+    from pathlib import Path
+    from fdrfreq.run import main
+    from fdrfreq.bank import save_bank
+    root = Path(__file__).resolve().parents[1] / 'fdrfreq' / 'configs'
+    entries = json.loads((root / 'paper.json').read_text())['entries']
+    seen = set()
+    for e in entries:
+        if 'chain' in e:
+            assert e['chain'] in seen, e['name']
+        seen.add(e['name'])
+    E = {e['name']: e for e in entries}
+    assert E['M4a']['base']['segments']['sim'] == 'visual'
+    assert E['M4a']['grid']['segments.alpha'] == [0.7, 1.0]
+    assert E['M4a_text']['base']['segments']['sim'] == 'text'
+    assert E['M4a_soft']['base']['holistic']['donor'] == 'visual'
+    for n in ('P4a_Proto', 'P4a_BiMC'):
+        assert E[n]['grid']['segments.alpha'] == [0.7, 1.0] and E[n]['base']['segments']['sim'] == 'visual'
+    save_bank(tmp_path / 'bank', bank._arrays, bank.meta, overwrite=True)
+    common = ['--bank', str(tmp_path / 'bank'), '--out', str(tmp_path)]
+    main(['select', *common, '--matrix', str(root / 'paper.json'), '--split-seeds', '2', '--sequences', '1',
+          '--split-mode', 'contiguous', '--entries', 'BiMC_ens', 'A1', 'A2'])
+    lk = tmp_path / 'locked_A2.json'
+    main(['frontier', *common, '--split-seeds', '2', '--sequences', '1', '--split-mode', 'contiguous',
+          '--base-locked', str(lk),
+          '--alpha-from-locked', '--override', str(root / 'frontier_m4a_fallback.json'),
+          '--axes', 'prior:var', '--k', '0.2'])
+    fr = json.loads(next(tmp_path.glob('frontier_shot*.json')).read_text())
+    sel_a2 = json.loads((tmp_path / 'select_A2.json').read_text())
+    ref_last = next((c['last'] for c in sel_a2['candidates'] if c['hash'] == sel_a2['selected_hash']),
+                    (sel_a2.get('fallback_metrics') or {}).get('last'))
+    assert [r['alpha'] for r in fr['rows']] == [1.0]
+    assert math.isclose(fr['reference']['last'], ref_last, abs_tol=1e-6)
+    from fdrfreq.run import gate_report
+    assert 'G7 M4a' in gate_report(tmp_path)

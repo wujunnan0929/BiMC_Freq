@@ -2057,6 +2057,438 @@
     "ula": null
    },
    "include_fallback": true
+  },
+  {
+   "name": "M4a",
+   "chain": "A2",
+   "note": "final method (sec 12.11): M4 with the two pre-registered changes it triggered -- donor similarity on visual prototypes (12.9 rule 2, CUB 5-shot M4-M4_visualsim +0.01) and alpha in {0.7, 1} (12.10, CIFAR 1-shot M4-M3 -0.15). Frozen after this stage.",
+   "base": {
+    "holistic": null,
+    "segments": {
+     "type": "prior",
+     "rank": "var",
+     "sim": "visual",
+     "scope": "global",
+     "alpha": 1.0,
+     "r": 1.0,
+     "tau": 22.0
+    }
+   },
+   "grid": {
+    "segments.k": [
+     0.1,
+     0.2,
+     0.3,
+     0.4,
+     0.5,
+     0.6,
+     0.7,
+     0.8,
+     1.0
+    ],
+    "segments.r": [
+     0.25,
+     0.5,
+     1.0
+    ],
+    "segments.tau": [
+     16.0,
+     22.0,
+     32.0
+    ],
+    "segments.alpha": [
+     0.7,
+     1.0
+    ]
+   },
+   "fallback": {
+    "segments": null,
+    "holistic": {
+     "donor": "visual",
+     "lam": 0.1,
+     "tau": 16.0
+    }
+   },
+   "include_fallback": true
+  },
+  {
+   "name": "M4a_lowvar",
+   "chain": "M4a",
+   "note": "same k, r, tau as M4a, channels ranked by lowvar; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "lowvar"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M4a_mag",
+   "chain": "M4a",
+   "note": "same k, r, tau as M4a, channels ranked by mag; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "mag"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M4a_fisher",
+   "chain": "M4a",
+   "note": "same k, r, tau as M4a, channels ranked by fisher; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "fisher"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M4a_freq",
+   "chain": "M4a",
+   "note": "same k, r, tau as M4a, channels ranked by freq; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "freq"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M4a_ebratio",
+   "chain": "M4a",
+   "note": "same k, r, tau as M4a, channels ranked by ebratio; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "ebratio"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M4a_random",
+   "chain": "M4a",
+   "note": "same k, r, tau as M4a, random channels; alpha and draw re-tuned (best of 3 draws)",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "random"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ],
+    "segments.seed": [
+     0,
+     1,
+     2
+    ]
+   }
+  },
+  {
+   "name": "M4a_text",
+   "chain": "A2",
+   "note": "ablation: text-guided donor similarity with its own full grid (what M4a would be without rule 12.9-2). Reported only; the method does not switch back.",
+   "base": {
+    "holistic": null,
+    "segments": {
+     "type": "prior",
+     "rank": "var",
+     "sim": "text",
+     "scope": "global",
+     "alpha": 1.0,
+     "r": 1.0,
+     "tau": 22.0
+    }
+   },
+   "grid": {
+    "segments.k": [
+     0.1,
+     0.2,
+     0.3,
+     0.4,
+     0.5,
+     0.6,
+     0.7,
+     0.8,
+     1.0
+    ],
+    "segments.r": [
+     0.25,
+     0.5,
+     1.0
+    ],
+    "segments.tau": [
+     16.0,
+     22.0,
+     32.0
+    ],
+    "segments.alpha": [
+     0.7,
+     1.0
+    ]
+   },
+   "fallback": {
+    "segments": null,
+    "holistic": {
+     "donor": "visual",
+     "lam": 0.1,
+     "tau": 16.0
+    }
+   },
+   "include_fallback": true
+  },
+  {
+   "name": "M4a_segment",
+   "chain": "M4a",
+   "note": "ablation: donors ranked inside the channel set; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "scope": "segment"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M4a_holistic",
+   "chain": "M4a",
+   "note": "ablation: BiMC's visual holistic step added back on top of M4a",
+   "base": {
+    "holistic": {
+     "donor": "visual",
+     "tau": 16.0
+    }
+   },
+   "grid": {
+    "holistic.lam": [
+     0.1,
+     0.2,
+     0.3,
+     0.5
+    ]
+   }
+  },
+  {
+   "name": "M4a_soft",
+   "chain": "M4a",
+   "note": "core control: the same visual donor shrinks every channel (BiMC's holistic step with lambda, tau re-tuned) instead of replacing the high-variance channels",
+   "base": {
+    "segments": null,
+    "holistic": {
+     "donor": "visual"
+    }
+   },
+   "grid": {
+    "holistic.lam": [
+     0.1,
+     0.2,
+     0.3,
+     0.5,
+     0.7,
+     0.9
+    ],
+    "holistic.tau": [
+     16.0,
+     22.0,
+     32.0
+    ]
+   }
+  },
+  {
+   "name": "M4a_ebmask",
+   "chain": "M4a",
+   "note": "analysis: shot-adaptive channel set s_j^2(K) > c t_j^2 instead of a fixed k",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "ebmask",
+     "s2": "empirical"
+    }
+   },
+   "grid": {
+    "segments.c": [
+     0.25,
+     0.5,
+     1.0,
+     2.0,
+     4.0,
+     8.0
+    ]
+   }
+  },
+  {
+   "name": "P4a_Proto",
+   "chain": "Proto",
+   "note": "plug-in: the M4a step on the prototype classifier (alpha in the grid: with alpha = 1 and no text head, large k turns a novel prototype into its donor)",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "var",
+     "sim": "visual",
+     "scope": "global",
+     "alpha": 1.0,
+     "r": 1.0,
+     "tau": 16.0
+    }
+   },
+   "grid": {
+    "segments.k": [
+     0.1,
+     0.2,
+     0.3,
+     0.4,
+     0.5,
+     0.6,
+     0.7,
+     0.8,
+     1.0
+    ],
+    "segments.r": [
+     0.5,
+     1.0
+    ],
+    "segments.alpha": [
+     0.7,
+     1.0
+    ]
+   },
+   "fallback": {
+    "segments": null
+   },
+   "include_fallback": true
+  },
+  {
+   "name": "P4a_BiMC",
+   "chain": "BiMC",
+   "note": "plug-in: the M4a step on BiMC (replaces its visual holistic step)",
+   "base": {
+    "holistic": null,
+    "segments": {
+     "type": "prior",
+     "rank": "var",
+     "sim": "visual",
+     "scope": "global",
+     "alpha": 1.0,
+     "r": 1.0,
+     "tau": 16.0
+    }
+   },
+   "grid": {
+    "segments.k": [
+     0.1,
+     0.2,
+     0.3,
+     0.4,
+     0.5,
+     0.6,
+     0.7,
+     0.8,
+     1.0
+    ],
+    "segments.r": [
+     0.5,
+     1.0
+    ],
+    "segments.alpha": [
+     0.7,
+     1.0
+    ]
+   },
+   "fallback": {
+    "segments": null,
+    "holistic": {
+     "donor": "visual",
+     "lam": 0.1,
+     "tau": 16.0
+    }
+   },
+   "include_fallback": true
+  },
+  {
+   "name": "Ours_ULA_M4a",
+   "chain": "M4a",
+   "base": {
+    "ula": {
+     "a": 8.0
+    }
+   },
+   "grid": {
+    "ula.tau": [
+     0.005,
+     0.01,
+     0.02,
+     0.04,
+     0.08,
+     0.16,
+     0.32
+    ],
+    "ula.lam": [
+     0.04,
+     0.1,
+     0.4,
+     1.0
+    ],
+    "ula.tth": [
+     0.06,
+     0.5,
+     0.8,
+     0.95
+    ],
+    "ula.T": [
+     0.25,
+     1.0
+    ]
+   },
+   "fallback": {
+    "ula": null
+   },
+   "include_fallback": true
   }
  ]
 }

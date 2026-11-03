@@ -172,6 +172,9 @@ def gate_report(out):
                                            'M4', 'M4_lowvar', 'M4_mag', 'M4_fisher', 'M4_freq', 'M4_ebratio',
                                            'M4_random', 'M4_segment', 'M4_visualsim', 'M4_holistic', 'M4_soft',
                                            'M4_ebmask', 'P4_Proto', 'P4_BiMC', 'Ours_ULA_M4',
+                                           'M4a', 'M4a_lowvar', 'M4a_mag', 'M4a_fisher', 'M4a_freq', 'M4a_ebratio',
+                                           'M4a_random', 'M4a_text', 'M4a_segment', 'M4a_holistic', 'M4a_soft',
+                                           'M4a_ebmask', 'P4a_Proto', 'P4a_BiMC', 'Ours_ULA_M4a',
                                            'Q2_classperm', 'Q3_random', 'Q4', 'Q4_shuffled', 'F1',
                                            'F3_aug', 'F4_noise', 'F5_randband', 'F6_blurdiff', 'R1')}
     diag = None
@@ -306,6 +309,35 @@ def gate_report(out):
     pl = [(x, y) for x, y in (('P4_Proto', 'Proto'), ('P4_BiMC', 'BiMC'), ('Ours_ULA_M4', 'M4')) if d(x, y) is not None]
     if pl:
         add('G6p plug-in / ULA on top (info)', None, ', '.join(f'{x}-{y} {d(x, y):+.2f}' for x, y in pl))
+    # G7: frozen final method M4a (sec 12.11). Everything below is reported, nothing changes the method.
+    v = d('M4a', 'A2')
+    hard = ('M4a_random', 'M4a_lowvar', 'M4a_fisher')
+    cs = [d('M4a', c) for c in hard]
+    if v is None or any(c is None for c in cs):
+        add('G7 M4a', None, 'missing')
+    else:
+        info = [f'vs {c} {d("M4a", c):+.2f}' for c in ('M4a_mag', 'M4a_freq', 'M4a_ebratio', 'M4', 'M3')
+                if d('M4a', c) is not None]
+        add('G7 M4a (vs A2 >= +0.3, vs random/lowvar/fisher >= +0.2)', v >= 0.3 and min(cs) >= 0.2,
+            f'{m["M4a"].get("params")}; vs A2 {v:+.2f} (HM {d("M4a", "A2", "last_hm"):+.2f}, splits {splits_pos("M4a", "A2")}); '
+            + ', '.join(f'vs {c} {x:+.2f}' for c, x in zip(hard, cs)) + ('; info ' + ', '.join(info) if info else ''))
+    for gate, a_, b_ in (('G7c claim: replace beats shrink-all (M4a - M4a_soft >= +0.1)', 'M4a', 'M4a_soft'),
+                         ('G7c info: text donor similarity (M4a_text - M4a)', 'M4a_text', 'M4a'),
+                         ('G7c info: segment-ranked donors (M4a_segment - M4a)', 'M4a_segment', 'M4a'),
+                         ('G7c info: holistic step on top (M4a_holistic - M4a)', 'M4a_holistic', 'M4a')):
+        v = d(a_, b_)
+        if v is not None:
+            add(gate, v >= 0.1 if gate.startswith('G7c claim') else None,
+                f'{a_}-{b_} {v:+.2f} (HM {d(a_, b_, "last_hm"):+.2f})')
+    v = d('M4a_ebmask', 'M4a')
+    if v is not None:
+        add('G7e EB channel rule (analysis only)', None,
+            f'M4a_ebmask-M4a {v:+.2f}, selected {m["M4a_ebmask"].get("params")}, channels/class '
+            f'{m["M4a_ebmask"].get("channels", 0):.0f} vs {m["M4a"].get("channels", 0):.0f}')
+    pl = [(x, y) for x, y in (('P4a_Proto', 'Proto'), ('P4a_BiMC', 'BiMC'), ('Ours_ULA_M4a', 'M4a'))
+          if d(x, y) is not None]
+    if pl:
+        add('G7p plug-in / ULA on top (info)', None, ', '.join(f'{x}-{y} {d(x, y):+.2f}' for x, y in pl))
     lines = ['Development gates (pseudo-incremental, base training images only)']
     lines += [f'  [{s:4s}] {g}: {det}' for g, s, det in rows]
     return '\n'.join(lines)
@@ -396,10 +428,14 @@ def cmd_frontier(a):
     """
     from .pipeline import deep_merge
     bank = load_bank(a.bank)
-    base = json.loads(Path(a.base_locked).read_text(encoding='utf-8'))['config']
+    locked = json.loads(Path(a.base_locked).read_text(encoding='utf-8'))['config']
+    if a.alpha_from_locked:
+        a.alphas = [float((locked.get('segments') or {}).get('alpha', 1.0))]
+    # the reference is always the locked config itself; the override only changes what is swept
+    base = deep_merge(locked, json.loads(Path(a.override).read_text(encoding='utf-8'))) if a.override else locked
     eps = sel.dev_episodes(bank, a.split_seeds, a.sequences, a.shot, a.split_mode)
     runners = [EpisodeRunner(bank, e) for e in eps]
-    ref = [r.run(base)['summary'] for r in runners]
+    ref = [r.run(locked)['summary'] for r in runners]
     rb = {k: float(np.mean([x[k] for x in ref])) for k in ('last', 'last_base', 'last_novel', 'last_hm')}
     print(f"reference ({len(eps)} episodes): last {rb['last']:.2f} base {rb['last_base']:.2f} "
           f"novel {rb['last_novel']:.2f} hm {rb['last_hm']:.2f}")
@@ -544,6 +580,10 @@ def main(argv=None):
                     help="channel budget (fraction of d) for 'prior:<rank>' axes; for prior:ebmask it is c")
     sp.add_argument('--r', type=float, default=None, help='donors (<=1: fraction of base classes); default: from the locked config')
     sp.add_argument('--tau', type=float, default=None, help='default: from the locked config')
+    sp.add_argument('--override', default=None,
+                    help='JSON file deep-merged on top of the locked config (e.g. when the locked config is a fallback)')
+    sp.add_argument('--alpha-from-locked', action='store_true',
+                    help="sweep only the locked segments' alpha (1.0 if the locked config has no segment step)")
     sp.add_argument('--split-seeds', type=int, nargs='+', default=[2, 3, 4])
     sp.add_argument('--sequences', type=int, default=10)
     sp.add_argument('--split-mode', default='contiguous', choices=('random', 'contiguous'))

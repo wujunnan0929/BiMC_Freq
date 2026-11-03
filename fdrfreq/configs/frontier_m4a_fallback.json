@@ -1,0 +1,11 @@
+{
+ "holistic": null,
+ "segments": {
+  "type": "prior",
+  "rank": "var",
+  "sim": "visual",
+  "scope": "global",
+  "r": 1.0,
+  "tau": 22.0
+ }
+}
