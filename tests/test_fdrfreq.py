@@ -425,3 +425,20 @@ def test_empirical_shot_variance_and_ebmask_shrink_with_shots(bank):
     m1 = one._prior_mask(s, 1, tc, one.raw_proto[:one.nb])
     m5 = one._prior_mask(s, 5, tc, one.raw_proto[:one.nb])
     assert m1.sum() >= m5.sum()
+
+
+def test_donor_fraction_and_full_replacement(bank, bench):
+    from fdrfreq.recompose import n_donors
+    assert n_donors(1.0, 50) == 50 and n_donors(0.5, 50) == 25 and n_donors(29, 50) == 29
+    assert n_donors(1, 50) == 1 and n_donors(0.25, 3) == 1 and n_donors(80, 50) == 50
+    r = EpisodeRunner(bank, bench)
+    cfg = {'ensemble': {}, 'holistic': None,
+           'segments': {'type': 'prior', 'rank': 'var', 'k': 1.0, 'alpha': 1.0, 'scope': 'global',
+                        'sim': 'text', 'r': 1.0, 'tau': 22.0}}
+    P = r.vis_cal(r.run(cfg)['config'])
+    tc = l2n(r.text_cal(0.5))
+    base_vis = l2n(r.raw_proto[:r.nb])
+    for j in range(r.nb, len(r.all_cls)):
+        w = softmax(22.0 * (base_vis.shape[0] and (tc[:r.nb] @ tc[j]) /
+                            (np.linalg.norm(tc[:r.nb], axis=1) * np.linalg.norm(tc[j]))))
+        assert np.allclose(P[j], l2n(w @ base_vis), atol=1e-10)

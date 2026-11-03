@@ -27,6 +27,8 @@ bash fdrfreq/scripts/final.sh cub200 "ZS ZS_desc Proto TEEN FDR_tf_published BiM
 
 Windows 下用 `fdrfreq\scripts\dev.ps1` 和 `final.ps1`，参数相同。
 
+**最终方法（PAPER_PLAN §12.9）。** 在 dev_core.sh 跑完的数据集上，再运行 `bash fdrfreq/scripts/dev_m4.sh <dataset>`：选 M4 一族（对照、消融、插件）→ gates → `summary_m4.txt`。
+
 **当前协议（PAPER_PLAN §12.8）。** 新数据集用 `bash fdrfreq/scripts/dev_core.sh <dataset> <data-root> <gpu>`：建 bank → parity → 在 contiguous 伪增量划分上以 HM 为目标选论文的核心 entry（输出到 `shot{1,5}_hm/`）→ gates → errconc。`EXTRA=1` 时再跑频率分析的 entry（Q1/Q2/Q3、F1/F3/F4/F5）。
 
 ## 命令
@@ -88,7 +90,7 @@ fdrfreq/
 - **FDR 原始坐标掩码。** 只在文本宽度等于嵌入维度时可用（ViT-B/16、ViT-L/14 满足）。
 
 ### 方差引导分段重组（M1 / M2 / M3，§12.7–12.8）
-M3 是最终候选：A2 锚点 + 无整体收缩 + `prior/var` 通道替换；M3_* 为匹配预算对照与消融，P_Proto / P_BiMC 为插件实验。
+M4 是最终方法：A2 锚点 + 无整体收缩 + 用一个文本引导的基类供体（`scope=global`）替换方差最大的 k 个通道（α=1）；M4_* 为匹配预算对照与消融，P4_Proto / P4_BiMC 为插件实验。M3 为其上一版（供体在通道内排序）。`k` 与 `r` 取浮点 ≤ 1 时分别表示维度比例与基类比例（1.0 = 全部）。
 
 `segments.type = "prior"`：所有新类共用一个只由基类数据决定的通道集合。
 - `rank`：`var`（合并类内方差 top-k，本文方法）、`lowvar`、`mag`、`fisher`、`random`、`freq`、`ebratio`、`ebmask`。

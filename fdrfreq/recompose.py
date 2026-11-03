@@ -29,6 +29,16 @@ def holistic(cur, base_vis, src_cur, src_base, lam, tau):
     return l2n((1.0 - lam) * l2n(cur) + lam * delta)
 
 
+def n_donors(r, n_base):
+    """Number of donor base classes. A float r <= 1 is a fraction of the base
+    classes (1.0 = all of them), so the setting means the same thing on a
+    pseudo episode (half the base classes) and on the benchmark; an int r is an
+    absolute count (FDR's published r = 29)."""
+    if isinstance(r, float) and r <= 1.0:
+        return max(1, min(int(round(r * n_base)), n_base))
+    return max(1, min(int(r), n_base))
+
+
 def segment_step(p, segments, src_n, src_base, base_vis, r, alphas, tau, scope='segment'):
     """p: [D] unit prototype of one novel class; segments: list of bool [D].
 
@@ -37,7 +47,7 @@ def segment_step(p, segments, src_n, src_base, base_vis, r, alphas, tau, scope='
     """
     p = np.asarray(p, dtype=np.float64).copy()
     base_vis = l2n(base_vis)
-    r = int(min(r, len(base_vis)))
+    r = n_donors(r, len(base_vis))
     if scope not in ('segment', 'global'):
         raise ValueError('scope must be segment or global')
     full = (src_base @ src_n) / np.maximum(np.linalg.norm(src_base, axis=1) * np.linalg.norm(src_n), 1e-12)

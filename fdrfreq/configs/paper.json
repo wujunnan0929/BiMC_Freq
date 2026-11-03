@@ -1164,6 +1164,391 @@
    "include_fallback": true
   },
   {
+   "name": "M4",
+   "chain": "A2",
+   "note": "final method (sec 12.9): replace the top-k pooled within-class-variance channels of each novel prototype by one text-guided base donor (softmax over the top r-fraction of base classes); alpha = 1, no holistic step",
+   "base": {
+    "holistic": null,
+    "segments": {
+     "type": "prior",
+     "rank": "var",
+     "sim": "text",
+     "scope": "global",
+     "alpha": 1.0,
+     "r": 1.0,
+     "tau": 22.0
+    }
+   },
+   "grid": {
+    "segments.k": [
+     0.1,
+     0.2,
+     0.3,
+     0.4,
+     0.5,
+     0.6,
+     0.7,
+     0.8,
+     1.0
+    ],
+    "segments.r": [
+     0.25,
+     0.5,
+     1.0
+    ],
+    "segments.tau": [
+     16.0,
+     22.0,
+     32.0
+    ]
+   },
+   "fallback": {
+    "segments": null,
+    "holistic": {
+     "donor": "visual",
+     "lam": 0.1,
+     "tau": 16.0
+    }
+   },
+   "include_fallback": true
+  },
+  {
+   "name": "M4_lowvar",
+   "chain": "M4",
+   "note": "same k, r, tau as M4, channels ranked by lowvar; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "lowvar"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M4_mag",
+   "chain": "M4",
+   "note": "same k, r, tau as M4, channels ranked by mag; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "mag"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M4_fisher",
+   "chain": "M4",
+   "note": "same k, r, tau as M4, channels ranked by fisher; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "fisher"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M4_freq",
+   "chain": "M4",
+   "note": "same k, r, tau as M4, channels ranked by freq; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "freq"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M4_ebratio",
+   "chain": "M4",
+   "note": "same k, r, tau as M4, channels ranked by ebratio; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "ebratio"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M4_random",
+   "chain": "M4",
+   "note": "same k, r, tau as M4, random channels; alpha and draw re-tuned (best of 3 draws)",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "random"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ],
+    "segments.seed": [
+     0,
+     1,
+     2
+    ]
+   }
+  },
+  {
+   "name": "M4_segment",
+   "chain": "M4",
+   "note": "FDR-style donors ranked inside the channel set; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "scope": "segment"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M4_visualsim",
+   "chain": "M4",
+   "note": "donor similarity on visual prototypes; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "sim": "visual"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M4_holistic",
+   "chain": "M4",
+   "note": "add the text-guided holistic step back on top of M4",
+   "base": {
+    "holistic": {
+     "donor": "text",
+     "tau": 22.0
+    }
+   },
+   "grid": {
+    "holistic.lam": [
+     0.1,
+     0.2,
+     0.3,
+     0.5
+    ]
+   }
+  },
+  {
+   "name": "M4_soft",
+   "chain": "M4",
+   "note": "same donor, soft shrinkage of every channel instead of replacement (holistic form)",
+   "base": {
+    "segments": null,
+    "holistic": {
+     "donor": "text"
+    }
+   },
+   "grid": {
+    "holistic.lam": [
+     0.1,
+     0.2,
+     0.3,
+     0.5,
+     0.7,
+     0.9
+    ],
+    "holistic.tau": [
+     16.0,
+     22.0,
+     32.0
+    ]
+   }
+  },
+  {
+   "name": "M4_ebmask",
+   "chain": "M4",
+   "note": "analysis: shot-adaptive channel set s_j^2(K) > c t_j^2 instead of a fixed k",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "ebmask",
+     "s2": "empirical"
+    }
+   },
+   "grid": {
+    "segments.c": [
+     0.25,
+     0.5,
+     1.0,
+     2.0,
+     4.0,
+     8.0
+    ]
+   }
+  },
+  {
+   "name": "P4_Proto",
+   "chain": "Proto",
+   "note": "plug-in: the M4 step on the prototype classifier",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "var",
+     "sim": "text",
+     "scope": "global",
+     "alpha": 1.0,
+     "r": 1.0,
+     "tau": 22.0
+    }
+   },
+   "grid": {
+    "segments.k": [
+     0.1,
+     0.2,
+     0.3,
+     0.4,
+     0.5,
+     0.6,
+     0.7,
+     0.8,
+     1.0
+    ],
+    "segments.r": [
+     0.5,
+     1.0
+    ]
+   },
+   "fallback": {
+    "segments": null
+   },
+   "include_fallback": true
+  },
+  {
+   "name": "P4_BiMC",
+   "chain": "BiMC",
+   "note": "plug-in: the M4 step on BiMC (replaces its visual holistic step)",
+   "base": {
+    "holistic": null,
+    "segments": {
+     "type": "prior",
+     "rank": "var",
+     "sim": "text",
+     "scope": "global",
+     "alpha": 1.0,
+     "r": 1.0,
+     "tau": 22.0
+    }
+   },
+   "grid": {
+    "segments.k": [
+     0.1,
+     0.2,
+     0.3,
+     0.4,
+     0.5,
+     0.6,
+     0.7,
+     0.8,
+     1.0
+    ],
+    "segments.r": [
+     0.5,
+     1.0
+    ]
+   },
+   "fallback": {
+    "segments": null,
+    "holistic": {
+     "donor": "visual",
+     "lam": 0.1,
+     "tau": 16.0
+    }
+   },
+   "include_fallback": true
+  },
+  {
+   "name": "Ours_ULA_M4",
+   "chain": "M4",
+   "base": {
+    "ula": {
+     "a": 8.0
+    }
+   },
+   "grid": {
+    "ula.tau": [
+     0.005,
+     0.01,
+     0.02,
+     0.04,
+     0.08,
+     0.16,
+     0.32
+    ],
+    "ula.lam": [
+     0.04,
+     0.1,
+     0.4,
+     1.0
+    ],
+    "ula.tth": [
+     0.06,
+     0.5,
+     0.8,
+     0.95
+    ],
+    "ula.T": [
+     0.25,
+     1.0
+    ]
+   },
+   "fallback": {
+    "ula": null
+   },
+   "include_fallback": true
+  },
+  {
    "name": "Q4",
    "chain": "K1",
    "base": {

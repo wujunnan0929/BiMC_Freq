@@ -169,6 +169,9 @@ def gate_report(out):
                                            'M2_ebmask', 'M3', 'M3_lowvar', 'M3_mag', 'M3_fisher', 'M3_freq',
                                            'M3_ebratio', 'M3_random', 'M3_global', 'M3_visualsim', 'M3_holistic',
                                            'Proto', 'BiMC', 'P_Proto', 'P_BiMC', 'Ours_ULA_M3',
+                                           'M4', 'M4_lowvar', 'M4_mag', 'M4_fisher', 'M4_freq', 'M4_ebratio',
+                                           'M4_random', 'M4_segment', 'M4_visualsim', 'M4_holistic', 'M4_soft',
+                                           'M4_ebmask', 'P4_Proto', 'P4_BiMC', 'Ours_ULA_M4',
                                            'Q2_classperm', 'Q3_random', 'Q4', 'Q4_shuffled', 'F1',
                                            'F3_aug', 'F4_noise', 'F5_randband', 'F6_blurdiff', 'R1')}
     diag = None
@@ -276,6 +279,33 @@ def gate_report(out):
     pl = [(x, y) for x, y in (('P_Proto', 'Proto'), ('P_BiMC', 'BiMC'), ('Ours_ULA_M3', 'M3')) if d(x, y) is not None]
     if pl:
         add('G5p plug-in / ULA on top (info)', None, ', '.join(f'{x}-{y} {d(x, y):+.2f}' for x, y in pl))
+    # G6: final method M4 (sec 12.9)
+    v = d('M4', 'A2')
+    hard = ('M4_random', 'M4_lowvar', 'M4_fisher')
+    cs = [d('M4', c) for c in hard]
+    if v is None or any(c is None for c in cs):
+        add('G6 M4', None, 'missing')
+    else:
+        info = [f'vs {c} {d("M4", c):+.2f}' for c in ('M4_mag', 'M4_freq', 'M4_ebratio', 'M3', 'M1')
+                if d('M4', c) is not None]
+        add('G6 M4 (vs A2 >= +0.3, vs random/lowvar/fisher >= +0.2)', v >= 0.3 and min(cs) >= 0.2,
+            f'{m["M4"].get("params")}; vs A2 {v:+.2f} (HM {d("M4", "A2", "last_hm"):+.2f}, splits {splits_pos("M4", "A2")}); '
+            + ', '.join(f'vs {c} {x:+.2f}' for c, x in zip(hard, cs)) + ('; info ' + ', '.join(info) if info else ''))
+    for gate, a_, b_ in (('G6c replace beats shrink-all (M4 - M4_soft >= +0.1)', 'M4', 'M4_soft'),
+                         ('G6c keep text donor similarity (M4 - M4_visualsim >= +0.1)', 'M4', 'M4_visualsim'),
+                         ('G6c switch to segment-ranked donors (M4_segment - M4 >= +0.1)', 'M4_segment', 'M4'),
+                         ('G6c add holistic back (M4_holistic - M4 >= +0.1)', 'M4_holistic', 'M4')):
+        v = d(a_, b_)
+        if v is not None:
+            add(gate, v >= 0.1, f'{a_}-{b_} {v:+.2f} (HM {d(a_, b_, "last_hm"):+.2f})')
+    v = d('M4_ebmask', 'M4')
+    if v is not None:
+        add('G6e EB channel rule (M4_ebmask >= M4 - 0.1; adopt only if the same c wins at every shot)', v >= -0.1,
+            f'M4_ebmask-M4 {v:+.2f}, selected {m["M4_ebmask"].get("params")}, channels/class '
+            f'{m["M4_ebmask"].get("channels", 0):.0f} vs {m["M4"].get("channels", 0):.0f}')
+    pl = [(x, y) for x, y in (('P4_Proto', 'Proto'), ('P4_BiMC', 'BiMC'), ('Ours_ULA_M4', 'M4')) if d(x, y) is not None]
+    if pl:
+        add('G6p plug-in / ULA on top (info)', None, ', '.join(f'{x}-{y} {d(x, y):+.2f}' for x, y in pl))
     lines = ['Development gates (pseudo-incremental, base training images only)']
     lines += [f'  [{s:4s}] {g}: {det}' for g, s, det in rows]
     return '\n'.join(lines)
@@ -383,11 +413,16 @@ def cmd_frontier(a):
         for q in qs:
             for alpha in a.alphas:
                 if prior:
-                    seg = {'type': 'prior', 'rank': axis.split(':', 1)[1], 'k': q, 'r': a.r, 'tau': a.tau,
-                           'alpha': alpha, 'sim': 'text', 'c': q, 's2': 'empirical'}
+                    seg = {'type': 'prior', 'rank': axis.split(':', 1)[1], 'k': q,
+                           'alpha': alpha, 'c': q, 's2': 'empirical'}
                 else:
-                    seg = {'type': axis, 'q': q, 'r': a.r, 'tau': a.tau, 'alpha': alpha, 'sim': 'text',
+                    seg = {'type': axis, 'q': q, 'alpha': alpha, 'sim': 'text',
                            'sigmas': [1, 2, 4], 'bands': [0, 1, 2]}
+                # r / tau / sim / scope are inherited from the locked config unless given
+                if a.r is not None:
+                    seg['r'] = float(a.r) if a.r <= 1 else int(a.r)
+                if a.tau is not None:
+                    seg['tau'] = a.tau
                 cfg = deep_merge(base, {'segments': seg})
                 S, cov = [], []
                 for r in runners:
@@ -507,8 +542,8 @@ def main(argv=None):
     sp.add_argument('--q', type=int, nargs='+', default=[50, 100, 150])
     sp.add_argument('--k', type=float, nargs='+', default=[0.05, 0.1, 0.2, 0.3, 0.4],
                     help="channel budget (fraction of d) for 'prior:<rank>' axes; for prior:ebmask it is c")
-    sp.add_argument('--r', type=int, default=29)
-    sp.add_argument('--tau', type=float, default=22.0)
+    sp.add_argument('--r', type=float, default=None, help='donors (<=1: fraction of base classes); default: from the locked config')
+    sp.add_argument('--tau', type=float, default=None, help='default: from the locked config')
     sp.add_argument('--split-seeds', type=int, nargs='+', default=[2, 3, 4])
     sp.add_argument('--sequences', type=int, default=10)
     sp.add_argument('--split-mode', default='contiguous', choices=('random', 'contiguous'))

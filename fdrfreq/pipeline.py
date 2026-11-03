@@ -36,7 +36,7 @@ from .freqmask import class_delta_means
 from .gda import GDA
 from .linalg import l2n, softmax, log_softmax, ridge_fit, within_class_centered
 from .metrics import session_metrics, summarize_sessions
-from .recompose import holistic, segment_step, frequency_alpha
+from .recompose import holistic, segment_step, frequency_alpha, n_donors
 
 DEFAULTS = {
     'classifier': 'bimc',
@@ -248,7 +248,7 @@ class EpisodeRunner:
             src = tc if s['sim'] == 'text' else self.raw_proto
             S = l2n(src[:nb]) @ l2n(src[:nb]).T
             np.fill_diagonal(S, -np.inf)
-            r = int(min(s['r'], nb - 1))
+            r = min(n_donors(s['r'], nb), nb - 1)
             D = np.zeros_like(base_vis)
             for b in range(nb):
                 top = np.argpartition(-S[b], r - 1)[:r]
@@ -306,7 +306,7 @@ class EpisodeRunner:
         nb = self.nb
         sig2, g2, t2, src = self._eb_stats(s, tc, base_vis)
         Sn = l2n(src[nov]) @ l2n(src[:nb]).T
-        r = int(min(s['r'], nb))
+        r = n_donors(s['r'], nb)
         out = np.zeros((len(nov), base_vis.shape[1]))
         perm = np.random.RandomState(4242 + int(s['seed'])).permutation(base_vis.shape[1])
         rhos = []
@@ -337,13 +337,13 @@ class EpisodeRunner:
                ebmask  every channel with s_j^2(K) > c * t_j^2: borrow where the
                        donor is expected to beat the K-shot mean (no k; shrinks
                        as K grows)
-        k < 1 is a fraction of the dimension.
+        A float k <= 1 is a fraction of the dimension (1.0 = every channel); an int is a count.
         """
         rank = s['rank']
         if rank not in PRIOR_RANKS:
             raise ValueError('unknown prior rank ' + str(rank))
         D = self.bank.dim
-        k = int(round(s['k'] * D)) if s['k'] < 1 else int(s['k'])
+        k = int(round(s['k'] * D)) if isinstance(s['k'], float) and s['k'] <= 1.0 else int(s['k'])
         k = max(1, min(k, D))
         ck = _key('pmask', rank, k, s['seed'], s['sigmas'], s['bands'], s['c'], s['s2'], s['draws'],
                   int(K) if rank == 'ebmask' else None,
