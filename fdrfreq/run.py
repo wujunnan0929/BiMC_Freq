@@ -166,7 +166,9 @@ def gate_report(out):
                                            'Q7_eb', 'Q7_uniform', 'Q7_shuffled', 'Q7e_eb',
                                            'M1', 'M1_lowvar', 'M1_mag', 'M1_fisher', 'M1_freq', 'M1_ebratio',
                                            'M1_random', 'M1_noholistic', 'M1_global', 'M1_visualsim',
-                                           'M2_ebmask',
+                                           'M2_ebmask', 'M3', 'M3_lowvar', 'M3_mag', 'M3_fisher', 'M3_freq',
+                                           'M3_ebratio', 'M3_random', 'M3_global', 'M3_visualsim', 'M3_holistic',
+                                           'Proto', 'BiMC', 'P_Proto', 'P_BiMC', 'Ours_ULA_M3',
                                            'Q2_classperm', 'Q3_random', 'Q4', 'Q4_shuffled', 'F1',
                                            'F3_aug', 'F4_noise', 'F5_randband', 'F6_blurdiff', 'R1')}
     diag = None
@@ -253,9 +255,56 @@ def gate_report(out):
         add('G4b soft EB, measured K-shot variance (info)', None if d('Q7e_eb', 'M1') is None else d('Q7e_eb', 'M1') >= -0.1,
             f'Q7e-Q7 {v:+.2f}, Q7e-K0 {d("Q7e_eb", "K0"):+.2f}, Q7e-M1 {d("Q7e_eb", "M1"):+.2f}'
             if d('Q7e_eb', 'M1') is not None else f'Q7e-Q7 {v:+.2f}')
+    # G5: final candidate M3 (sec 12.8) on top of the anchor, no holistic step
+    v = d('M3', 'A2')
+    hard = ('M3_random', 'M3_lowvar', 'M3_fisher')
+    cs = [d('M3', c) for c in hard]
+    if v is None or any(c is None for c in cs):
+        add('G5 M3', None, 'missing')
+    else:
+        info = [f'vs {c} {d("M3", c):+.2f}' for c in ('M3_mag', 'M3_freq', 'M3_ebratio', 'M1', 'Q7e_eb')
+                if d('M3', c) is not None]
+        add('G5 M3 (vs A2 >= +0.3, vs random/lowvar/fisher >= +0.2)', v >= 0.3 and min(cs) >= 0.2,
+            f'vs A2 {v:+.2f} (HM {d("M3", "A2", "last_hm"):+.2f}, splits {splits_pos("M3", "A2")}); '
+            + ', '.join(f'vs {c} {x:+.2f}' for c, x in zip(hard, cs)) + ('; info ' + ', '.join(info) if info else ''))
+    for gate, a_, b_ in (('G5c keep segment-local donors (M3 - M3_global >= +0.1)', 'M3', 'M3_global'),
+                         ('G5c keep text donor similarity (M3 - M3_visualsim >= +0.1)', 'M3', 'M3_visualsim'),
+                         ('G5c add holistic back (M3_holistic - M3 >= +0.1)', 'M3_holistic', 'M3')):
+        v = d(a_, b_)
+        if v is not None:
+            add(gate, v >= 0.1, f'{a_}-{b_} {v:+.2f} (HM {d(a_, b_, "last_hm"):+.2f})')
+    pl = [(x, y) for x, y in (('P_Proto', 'Proto'), ('P_BiMC', 'BiMC'), ('Ours_ULA_M3', 'M3')) if d(x, y) is not None]
+    if pl:
+        add('G5p plug-in / ULA on top (info)', None, ', '.join(f'{x}-{y} {d(x, y):+.2f}' for x, y in pl))
     lines = ['Development gates (pseudo-incremental, base training images only)']
     lines += [f'  [{s:4s}] {g}: {det}' for g, s, det in rows]
     return '\n'.join(lines)
+
+
+def cmd_summary(a):
+    """Selected dev metrics of each entry (what used to be pasted as a Python snippet)."""
+    lines = []
+    for d in a.dirs:
+        lines.append(f'==== {d}')
+        names = a.entries or sorted(f.stem[len('select_'):] for f in Path(d).glob('select_*.json'))
+        for n in names:
+            f = Path(d) / f'select_{n}.json'
+            if not f.exists():
+                lines.append(f'{n:14s} missing')
+                continue
+            r = json.loads(f.read_text(encoding='utf-8'))
+            c = next((c for c in r['candidates'] if c['hash'] == r['selected_hash']), None)
+            if c is None:
+                fb = r.get('fallback_metrics') or {}
+                lines.append(f"{n:14s} last {fb.get('last', float('nan')):.2f} HM {fb.get('last_hm', float('nan')):.2f} fallback")
+                continue
+            lines.append(f"{n:14s} last {c['last']:.2f} B {c['last_base']:.2f} N {c['last_novel']:.2f} "
+                         f"HM {c['last_hm']:.2f} ch {c.get('channels', 0):.0f} "
+                         f"splits {[round(x, 2) for x in c['per_split_last']]} {r['selected_params']}")
+    text = '\n'.join(lines)
+    print(text)
+    if a.out:
+        Path(a.out).write_text(text + '\n', encoding='utf-8')
 
 
 def cmd_gates(a):
@@ -475,6 +524,12 @@ def main(argv=None):
     sp.add_argument('--sequences', type=int, default=5)
     sp.add_argument('--split-mode', default='contiguous', choices=('random', 'contiguous'))
     sp.set_defaults(func=cmd_errconc)
+
+    sp = sub.add_parser('summary')
+    sp.add_argument('--dirs', nargs='+', required=True)
+    sp.add_argument('--entries', nargs='*')
+    sp.add_argument('--out')
+    sp.set_defaults(func=cmd_summary)
 
     sp = sub.add_parser('gates')
     sp.add_argument('--dir', required=True)

@@ -27,6 +27,8 @@ bash fdrfreq/scripts/final.sh cub200 "ZS ZS_desc Proto TEEN FDR_tf_published BiM
 
 Windows 下用 `fdrfreq\scripts\dev.ps1` 和 `final.ps1`，参数相同。
 
+**当前协议（PAPER_PLAN §12.8）。** 新数据集用 `bash fdrfreq/scripts/dev_core.sh <dataset> <data-root> <gpu>`：建 bank → parity → 在 contiguous 伪增量划分上以 HM 为目标选论文的核心 entry（输出到 `shot{1,5}_hm/`）→ gates → errconc。`EXTRA=1` 时再跑频率分析的 entry（Q1/Q2/Q3、F1/F3/F4/F5）。
+
 ## 命令
 
 | 命令 | 作用 | 会读测试集吗 |
@@ -38,6 +40,7 @@ Windows 下用 `fdrfreq\scripts\dev.ps1` 和 `final.ps1`，参数相同。
 | `python -m fdrfreq.run probe` | 协议保真度：固定参考配置在两种伪增量划分（random / contiguous）上的 base / novel 变化方向；加 `--with-test` 时并列给出基准上的同一组固定配置 | 仅 `--with-test` 时 |
 | `python -m fdrfreq.run frontier` | 以某个锁定配置为起点，按分解轴扫强度 α 与通道预算 q，输出 ΔLast / ΔBase / ΔNovel / HM 与实际改动的通道数（base–novel 权衡曲线）；`--axes prior:var prior:random …` 配合 `--k` 扫按基类统计量排序的通道集合（`prior:ebmask` 时 `--k` 为阈值 c） | 否 |
 | `python -m fdrfreq.run errconc` | 原型误差集中度：K-shot 原型误差落在频率掩码、借来的掩码、类无关掩码（方差 / 低方差 / 幅值 / Fisher）、随机掩码、关键词掩码中的占比；同尺寸掩码的 Jaccard 重叠；捕获率–通道预算曲线（含 oracle 上界） | 否 |
+| `python -m fdrfreq.run summary` | 各 entry 选出的开发集指标（Last / B / N / HM / 改动通道数 / 三个划分 / 选出的超参） | 否 |
 | `python -m fdrfreq.run gates` | 根据 select / diagnose 输出给出各闸门的 PASS / FAIL | 否 |
 | `python -m fdrfreq.run evaluate` | 只接受 `locked_*.json`；文件被改过（hash 不符）或来自其他 bank 都会拒绝 | 是 |
 | `python -m fdrfreq.report` | 主表、与 anchor 的配对比较（bootstrap CI、seed 计数、fixed/broken、McNemar）、逐 session 表 | 读 evaluate 输出 |
@@ -84,7 +87,9 @@ fdrfreq/
 - **support 来源。** support 下标直接取自各 seed 的 `DatasetManager`，并核对复刻采样器与之是否一致，结果记录在 `meta.json` 的 `support_replica_matches_engine`。标准 CEC 划分可通过 `--standard-manifest` 存为 seed 0。
 - **FDR 原始坐标掩码。** 只在文本宽度等于嵌入维度时可用（ViT-B/16、ViT-L/14 满足）。
 
-### 方差引导分段重组（M1 / M2，§12.7）
+### 方差引导分段重组（M1 / M2 / M3，§12.7–12.8）
+M3 是最终候选：A2 锚点 + 无整体收缩 + `prior/var` 通道替换；M3_* 为匹配预算对照与消融，P_Proto / P_BiMC 为插件实验。
+
 `segments.type = "prior"`：所有新类共用一个只由基类数据决定的通道集合。
 - `rank`：`var`（合并类内方差 top-k，本文方法）、`lowvar`、`mag`、`fisher`、`random`、`freq`、`ebratio`、`ebmask`。
 - `k`：通道预算，<1 时为维度比例。

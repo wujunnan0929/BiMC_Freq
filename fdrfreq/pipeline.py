@@ -488,7 +488,7 @@ class EpisodeRunner:
             elif typ == 'freq_random':
                 r = np.random.RandomState(c_id * 131 + b + 7)
                 m = np.zeros(D, dtype=bool)
-                m[r.choice(D, q, replace=False)] = True
+                m[r.choice(D, min(q, D), replace=False)] = True
                 segs.append(m)
         return segs
 

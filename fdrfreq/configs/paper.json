@@ -837,6 +837,333 @@
    "include_fallback": true
   },
   {
+   "name": "M3",
+   "chain": "A2",
+   "note": "final candidate (sec 12.8): replace the top-k pooled within-class-variance channels of each novel prototype by text-guided, segment-matched base donors; no holistic step",
+   "base": {
+    "holistic": null,
+    "segments": {
+     "type": "prior",
+     "rank": "var",
+     "sim": "text",
+     "r": 29,
+     "tau": 22.0
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.7,
+     1.0
+    ],
+    "segments.k": [
+     0.1,
+     0.2,
+     0.3,
+     0.4,
+     0.5,
+     0.6,
+     0.8,
+     1.0
+    ],
+    "segments.r": [
+     10,
+     29,
+     50
+    ]
+   },
+   "fallback": {
+    "segments": null,
+    "holistic": {
+     "donor": "visual",
+     "lam": 0.1,
+     "tau": 16.0
+    }
+   },
+   "include_fallback": true
+  },
+  {
+   "name": "M3_lowvar",
+   "chain": "M3",
+   "note": "same k and r as M3, channels ranked by lowvar; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "lowvar"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M3_mag",
+   "chain": "M3",
+   "note": "same k and r as M3, channels ranked by mag; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "mag"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M3_fisher",
+   "chain": "M3",
+   "note": "same k and r as M3, channels ranked by fisher; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "fisher"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M3_freq",
+   "chain": "M3",
+   "note": "same k and r as M3, channels ranked by freq; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "freq"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M3_ebratio",
+   "chain": "M3",
+   "note": "same k and r as M3, channels ranked by ebratio; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "ebratio"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M3_random",
+   "chain": "M3",
+   "note": "same k and r as M3, random channels; alpha and draw re-tuned (best of 3 draws)",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "random"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ],
+    "segments.seed": [
+     0,
+     1,
+     2
+    ]
+   }
+  },
+  {
+   "name": "M3_global",
+   "chain": "M3",
+   "note": "donors ranked on the whole vector; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "scope": "global"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M3_visualsim",
+   "chain": "M3",
+   "note": "donor similarity on visual prototypes; alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "sim": "visual"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M3_holistic",
+   "chain": "M3",
+   "note": "add the text-guided holistic step back on top of M3",
+   "base": {
+    "holistic": {
+     "donor": "text",
+     "tau": 22.0
+    }
+   },
+   "grid": {
+    "holistic.lam": [
+     0.1,
+     0.2,
+     0.3,
+     0.5
+    ]
+   }
+  },
+  {
+   "name": "P_Proto",
+   "chain": "Proto",
+   "note": "plug-in: the M3 step on the prototype classifier",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "var",
+     "sim": "text",
+     "r": 29,
+     "tau": 22.0
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.7,
+     1.0
+    ],
+    "segments.k": [
+     0.1,
+     0.2,
+     0.3,
+     0.4,
+     0.5,
+     0.6,
+     0.8,
+     1.0
+    ]
+   },
+   "fallback": {
+    "segments": null
+   },
+   "include_fallback": true
+  },
+  {
+   "name": "P_BiMC",
+   "chain": "BiMC",
+   "note": "plug-in: the M3 step on BiMC (replaces its visual holistic step)",
+   "base": {
+    "holistic": null,
+    "segments": {
+     "type": "prior",
+     "rank": "var",
+     "sim": "text",
+     "r": 29,
+     "tau": 22.0
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.7,
+     1.0
+    ],
+    "segments.k": [
+     0.1,
+     0.2,
+     0.3,
+     0.4,
+     0.5,
+     0.6,
+     0.8,
+     1.0
+    ]
+   },
+   "fallback": {
+    "segments": null,
+    "holistic": {
+     "donor": "visual",
+     "lam": 0.1,
+     "tau": 16.0
+    }
+   },
+   "include_fallback": true
+  },
+  {
+   "name": "Ours_ULA_M3",
+   "chain": "M3",
+   "base": {
+    "ula": {
+     "a": 8.0
+    }
+   },
+   "grid": {
+    "ula.tau": [
+     0.005,
+     0.01,
+     0.02,
+     0.04,
+     0.08,
+     0.16,
+     0.32
+    ],
+    "ula.lam": [
+     0.04,
+     0.1,
+     0.4,
+     1.0
+    ],
+    "ula.tth": [
+     0.06,
+     0.5,
+     0.8,
+     0.95
+    ],
+    "ula.T": [
+     0.25,
+     1.0
+    ]
+   },
+   "fallback": {
+    "ula": null
+   },
+   "include_fallback": true
+  },
+  {
    "name": "Q4",
    "chain": "K1",
    "base": {
