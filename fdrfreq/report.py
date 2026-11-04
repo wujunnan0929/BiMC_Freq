@@ -1,11 +1,12 @@
 """Paper tables from ``fdrfreq.run evaluate`` outputs.
 
-    python -m fdrfreq.report --dir DIR --anchor A2 [--format md|latex] [--shot 5]
+    python -m fdrfreq.report --dir DIR --anchor A2 [--format md|latex] [--shot 5] [--pairs A:B ...]
 
 Main table: Avg / Last / Base / Novel / HM / PD (mean +- std over support seeds).
 Paired table vs the anchor: delta Last with a 95% paired bootstrap CI (images
 resampled within seed), number of seeds with a positive delta, fixed/broken
-counts and the number of seeds with exact McNemar p < 0.05.
+counts and the number of seeds with exact McNemar p < 0.05. ``--pairs A:B`` adds the same
+statistics for B - A on any listed pair (pairs with a missing run are skipped and named).
 """
 
 import argparse
@@ -32,7 +33,33 @@ def _fmt(m, s, latex):
     return f'{m:.2f}$\\pm${s:.2f}' if latex else f'{m:.2f}±{s:.2f}'
 
 
-def build_report(dirpath, anchor=None, fmt='md', shot=None):
+def _paired_rows(runs, pairs, sep, end):
+    rows, missing = [], []
+    for a, b in pairs:
+        if a not in runs or b not in runs:
+            missing.append(f'{a}:{b}')
+            continue
+        (ra, pa), (_, p) = runs[a], runs[b]
+        ca, cb, fx, br, sig = [], [], 0, 0, 0
+        for s in ra['seeds']:
+            ya, yb = pa[f'labels_seed{s}'], p[f'labels_seed{s}']
+            if not np.array_equal(ya, yb):
+                raise ValueError('query order differs between runs')
+            a_ok, b_ok = pa[f'pred_seed{s}'] == ya, p[f'pred_seed{s}'] == yb
+            ca.append(a_ok)
+            cb.append(b_ok)
+            fb = fixed_broken(pa[f'pred_seed{s}'], p[f'pred_seed{s}'], ya)
+            fx += fb['fixed']
+            br += fb['broken']
+            sig += int(mcnemar_exact(a_ok, b_ok)['p'] < 0.05)
+        bs = paired_bootstrap(ca, cb)
+        rows.append(sep.join([f'{b} - {a}', f"{bs['delta']:+.2f}", f"[{bs['ci_low']:+.2f}, {bs['ci_high']:+.2f}]",
+                              f"{bs['seeds_positive']}/{bs['n_seeds']}", str(fx), str(br),
+                              f"{sig}/{len(ra['seeds'])}"]) + end)
+    return rows, missing
+
+
+def build_report(dirpath, anchor=None, fmt='md', shot=None, pairs=None):
     runs = _load(dirpath, shot)
     if not runs:
         return 'no evaluation files found'
@@ -76,6 +103,16 @@ def build_report(dirpath, anchor=None, fmt='md', shot=None):
                                    f"{bs['seeds_positive']}/{bs['n_seeds']}", str(fx), str(br),
                                    f'{sig}/{len(seeds)}']) + end)
         out += [f'Paired comparison with {anchor} (last session)', *lines, '']
+    if pairs:
+        head = ['Pair (B - A)', 'ΔLast', '95% CI', 'seeds>0', 'fixed', 'broken', 'McNemar p<.05']
+        lines = [sep.join(head) + end]
+        if not latex:
+            lines.append('|'.join(['---'] * len(head)))
+        rows, missing = _paired_rows(runs, pairs, sep, end)
+        out += ['Pre-registered paired comparisons (last session)', *lines, *rows]
+        if missing:
+            out.append(f"skipped (run missing): {', '.join(missing)}")
+        out.append('')
     sess = {}
     for name, (r, _) in runs.items():
         sess[name] = np.mean([v['summary']['sessions'] for v in r['seeds'].values()], axis=0)
@@ -96,8 +133,10 @@ def main(argv=None):
     p.add_argument('--anchor')
     p.add_argument('--format', default='md', choices=('md', 'latex'))
     p.add_argument('--shot', type=int)
+    p.add_argument('--pairs', nargs='+', default=None, help='A:B pairs, reported as B - A')
     a = p.parse_args(argv)
-    print(build_report(a.dir, a.anchor, a.format, a.shot))
+    pairs = [tuple(x.split(':', 1)) for x in a.pairs] if a.pairs else None
+    print(build_report(a.dir, a.anchor, a.format, a.shot, pairs))
 
 
 if __name__ == '__main__':

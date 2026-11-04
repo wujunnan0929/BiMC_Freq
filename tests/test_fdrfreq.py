@@ -286,6 +286,9 @@ def test_cli_smoke_and_lock_integrity(tmp_path):
     assert (tmp_path / 'eval_A2_shot5.json').exists()
     res = json.loads((tmp_path / 'eval_A2_shot5.json').read_text())
     assert set(res['seeds']) == {'1', '2', '3'}
+    from fdrfreq.report import build_report
+    rep = build_report(tmp_path, anchor='A2', pairs=[('A1', 'A2'), ('A2', 'not_run')])
+    assert 'A2 - A1' in rep and 'skipped (run missing): A2:not_run' in rep
     lk = json.loads((tmp_path / 'locked_A2.json').read_text())
     lk['config']['anchor']['omega'] = 0.99
     bad = tmp_path / 'locked_tampered.json'
