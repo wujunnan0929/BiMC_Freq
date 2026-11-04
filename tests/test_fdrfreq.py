@@ -495,3 +495,12 @@ def test_m4a_family_is_well_formed_and_frontier_reference_is_the_locked_config(b
     assert math.isclose(fr['reference']['last'], ref_last, abs_tol=1e-6)
     from fdrfreq.run import gate_report
     assert 'G7 M4a' in gate_report(tmp_path)
+
+
+def test_error_type_categories_and_sessions():
+    from fdrfreq.errtypes import categorize, session_of
+    # 4 base classes (0-3), sessions of 2 new classes: {4,5}, {6,7}
+    y = np.array([0, 1, 2, 4, 5, 6, 7, 3])
+    p = np.array([0, 2, 5, 1, 4, 7, 4, 3])
+    assert categorize(p, y, 4).tolist() == [0, 1, 2, 3, 4, 4, 4, 0]
+    assert session_of(np.array([0, 3, 4, 5, 6, 7]), 4, 2).tolist() == [0, 0, 1, 1, 2, 2]
