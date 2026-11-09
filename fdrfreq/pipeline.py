@@ -36,7 +36,7 @@ from .freqmask import class_delta_means
 from .gda import GDA
 from .linalg import l2n, softmax, log_softmax, ridge_fit, within_class_centered
 from .metrics import session_metrics, summarize_sessions
-from .recompose import holistic, segment_step, frequency_alpha, n_donors
+from .recompose import holistic, segment_step, weighted_step, frequency_alpha, n_donors
 
 DEFAULTS = {
     'classifier': 'bimc',
@@ -81,7 +81,8 @@ def ula_adjust(z, nb, tau, lam, T, a, tth):
     return z
 
 UNION_TYPES = ('freq_union', 'var_union', 'mag_union', 'fisher_union', 'random_union')
-PRIOR_RANKS = ('var', 'lowvar', 'mag', 'fisher', 'random', 'freq', 'ebratio', 'ebmask')
+PRIOR_RANKS = ('var', 'lowvar', 'mag', 'fisher', 'random', 'freq', 'ebratio', 'ebmask', 'ape', 'ape_low', 'softvar')
+APE_W = (0.7, 0.3)  # training-free APE criterion weights (Zhu et al., ICCV 2023, official configs)
 
 SEGMENT_DEFAULTS = {'type': 'keyword', 'q': 50, 'r': 29, 'alpha': 0.2, 'tau': 22.0,
                     'sim': 'text', 'm': 8, 'min_df': 2, 'max_df': 0.3,
@@ -337,6 +338,11 @@ class EpisodeRunner:
                ebmask  every channel with s_j^2(K) > c * t_j^2: borrow where the
                        donor is expected to beat the K-shot mean (no k; shrinks
                        as K grows)
+               ape     top-k of APE's training-free criterion on the base classes,
+                       -0.7 * inter-class similarity + 0.3 * between-class variance of
+                       the text weights (the channels APE keeps); ape_low = bottom-k
+               softvar not a set: weights w_j = var_j / (var_j + c * median(var))
+                       (see _prior_weights; only through _segments)
         A float k <= 1 is a fraction of the dimension (1.0 = every channel); an int is a count.
         """
         rank = s['rank']
@@ -366,6 +372,11 @@ class EpisodeRunner:
             m = kw.topq_mask(np.abs(X).mean(0), k)
         elif rank == 'random':
             m[np.random.RandomState(12345 + int(s['seed'])).choice(D, k, replace=False)] = True
+        elif rank in ('ape', 'ape_low'):
+            crit = self._ape_criterion(tc)
+            m = kw.topk_signed(crit, k) if rank == 'ape' else kw.topk_signed(-crit, k)
+        elif rank == 'softvar':
+            raise ValueError('softvar gives weights, not a channel set; use _prior_weights')
         elif rank == 'freq':
             deltas, common = self.freq_deltas(s['sigmas'])
             A = np.stack([np.abs(deltas[:self.nb, b] - common[b]).mean(0) for b in s['bands']])
@@ -379,6 +390,42 @@ class EpisodeRunner:
                 m = s2 > float(s['c']) * t2
         self.cache[ck] = m
         return m
+
+    def _ape_criterion(self, tc):
+        """APE's training-free channel criterion (official utils.cal_criterion with
+        only_use_txt=False) computed on the base classes: S_j = mean over pairs of
+        samples from different classes (text embedding + training images) of the
+        product of their j-th values; V_j = variance over classes of the text
+        weights; criterion = -0.7 * S_j + 0.3 * V_j (larger = kept by APE)."""
+        ck = _key('ape', getattr(self, '_cur_lam_t', None))
+        if ck in self.cache:
+            return self.cache[ck]
+        X, y = self.sup_feat[0], self.sup_lab[0]
+        T = l2n(tc[:self.nb])
+        sums = np.zeros((self.nb, self.bank.dim))
+        cnt = np.zeros(self.nb)
+        for b, c in enumerate(self.base_cls):
+            rows = X[y == c]
+            sums[b] = T[b] + rows.sum(0)
+            cnt[b] = 1 + len(rows)
+        tot = sums.sum(0)
+        num = tot ** 2 - (sums ** 2).sum(0)
+        den = cnt.sum() ** 2 - (cnt ** 2).sum()
+        S = num / max(den, 1.0)
+        crit = -APE_W[0] * S + APE_W[1] * T.var(0, ddof=1)  # torch.var default is unbiased
+        self.cache[ck] = crit
+        return crit
+
+    def _prior_weights(self, s):
+        """softvar: w_j = var_j / (var_j + c * median(var)), the soft keep-or-replace
+        weight rho_j = s_j^2 / (s_j^2 + t^2) with s_j^2 proportional to the pooled
+        within-class variance and one scalar (c) for the constant donor error."""
+        ck = _key('pweights', s['c'])
+        if ck not in self.cache:
+            Xc, _ = within_class_centered(self.sup_feat[0], self.sup_lab[0], self.base_cls)
+            wvar = (Xc ** 2).mean(0)
+            self.cache[ck] = wvar / (wvar + float(s['c']) * np.median(wvar))
+        return self.cache[ck]
 
     def _segments(self, P, nov, s, tc, base_vis):
         out = P[nov].copy()
@@ -414,6 +461,15 @@ class EpisodeRunner:
                 segs = [use.masks[w] for w in words]
             elif typ in UNION_TYPES:
                 segs = [self._channel_prior(s, typ, deltas, common)]
+            elif typ == 'prior' and s['rank'] == 'softvar':
+                if s['scope'] != 'global':
+                    raise ValueError('softvar uses one global donor; set scope=global')
+                w = float(s['alpha']) * self._prior_weights(s)
+                src_n, src_b = (tc[j], tc[:self.nb]) if s['sim'] == 'text' else (out[i], base_vis)
+                self._seg_cov.append(int(round(float(w.sum()))))
+                self._seg_n.append(1)
+                out[i] = weighted_step(out[i], w, src_n, src_b, base_vis, s['r'], s['tau'])
+                continue
             elif typ == 'prior':
                 segs = [self._prior_mask(s, self.counts[j], tc, base_vis)]
             else:

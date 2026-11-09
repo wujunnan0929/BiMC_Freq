@@ -92,6 +92,48 @@ def paired_bootstrap(correct_a, correct_b, reps=2000, seed=0):
             'seeds_positive': int(sum(d.mean() > 0 for d in per_seed)), 'n_seeds': len(per_seed)}
 
 
+def hierarchical_bootstrap(correct_a, correct_b, reps=4000, seed=0):
+    """Two-level bootstrap of mean_seed(acc_b - acc_a): resample the support seeds, then the
+    test images within each drawn seed, so the interval includes the variance of the support
+    draw. Per-image differences take values in {-1, 0, 1}, so each image resample is one
+    multinomial draw over those three outcomes. Also returns the seed-level mean and standard
+    deviation of the paired differences and a two-sided bootstrap p-value for 'no difference'."""
+    r = np.random.RandomState(seed)
+    per_seed = [np.asarray(b, float) - np.asarray(a, float) for a, b in zip(correct_a, correct_b)]
+    S = len(per_seed)
+    counts = [np.array([(d < 0).sum(), (d == 0).sum(), (d > 0).sum()]) for d in per_seed]
+    n = [int(c.sum()) for c in counts]
+    probs = [c / max(c.sum(), 1) for c in counts]
+    means = np.array([d.mean() for d in per_seed])
+    boots = np.empty(reps)
+    for i in range(reps):
+        pick = r.randint(0, S, S)
+        vals = []
+        for s in pick:
+            m = r.multinomial(n[s], probs[s])
+            vals.append((m[2] - m[0]) / max(n[s], 1))
+        boots[i] = np.mean(vals)
+    lo, hi = np.percentile(boots, [2.5, 97.5])
+    p = 2.0 * min((boots <= 0).mean(), (boots >= 0).mean())
+    return {'delta': 100.0 * float(means.mean()), 'ci_low': 100.0 * float(lo), 'ci_high': 100.0 * float(hi),
+            'seed_mean': 100.0 * float(means.mean()),
+            'seed_sd': 100.0 * float(means.std(ddof=1)) if S > 1 else float('nan'),
+            'p_boot': float(min(1.0, max(p, 1.0 / reps))), 'n_seeds': S}
+
+
+def holm(pvals):
+    """Holm-Bonferroni adjusted p-values (same order as the input)."""
+    p = np.asarray(pvals, dtype=np.float64)
+    m = len(p)
+    order = np.argsort(p)
+    adj = np.empty(m)
+    run = 0.0
+    for rank, i in enumerate(order):
+        run = max(run, min(1.0, (m - rank) * p[i]))
+        adj[i] = run
+    return adj.tolist()
+
+
 def topk_recall(scores, labels_idx, k):
     top = np.argsort(-scores, axis=1)[:, :k]
     return 100.0 * float((top == np.asarray(labels_idx)[:, None]).any(1).mean())

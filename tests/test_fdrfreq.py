@@ -1,5 +1,6 @@
 """Tests for the cache-based training-free calibration package (numpy only)."""
 
+import copy
 import json
 import math
 
@@ -10,10 +11,10 @@ from fdrfreq import keywords as kw
 from fdrfreq.dctband import dct_matrix, radial_bands, random_bands, band_energies
 from fdrfreq.freqmask import class_specificity, random_jaccard, class_delta_means, class_masks
 from fdrfreq.gda import GDA
-from fdrfreq.linalg import ledoit_wolf_shrinkage, softmax, l2n
+from fdrfreq.linalg import ledoit_wolf_shrinkage, softmax, l2n, within_class_centered
 from fdrfreq.metrics import (mcnemar_exact, paired_bootstrap, fixed_broken, session_metrics,
                              complementarity)
-from fdrfreq.pipeline import EpisodeRunner
+from fdrfreq.pipeline import EpisodeRunner, resolve_config
 from fdrfreq.protocol import (benchmark_episode, pseudo_episodes, check_episode,
                               replica_support_indices, task_classes)
 from fdrfreq import select as sel
@@ -504,3 +505,131 @@ def test_error_type_categories_and_sessions():
     p = np.array([0, 2, 5, 1, 4, 7, 4, 3])
     assert categorize(p, y, 4).tolist() == [0, 1, 2, 3, 4, 4, 4, 0]
     assert session_of(np.array([0, 3, 4, 5, 6, 7]), 4, 2).tolist() == [0, 0, 1, 1, 2, 2]
+
+
+# ----------------------------------------------------------------- Neurocomputing revision (PAPER_PLAN sec 13)
+def test_weighted_step_matches_segment_step_for_hard_masks():
+    from fdrfreq.recompose import weighted_step, segment_step
+    r = np.random.RandomState(0)
+    base = l2n(r.randn(12, 16))
+    p = l2n(r.randn(16))
+    m = r.rand(16) < 0.4
+    for a in (1.0, 0.7):
+        ref = segment_step(p, [m], p, base, base, 0.5, [a], 20.0, scope='global')
+        got = weighted_step(p, a * m.astype(float), p, base, base, 0.5, 20.0)
+        assert np.allclose(ref, got, atol=1e-12)
+
+
+def test_ape_criterion_matches_brute_force(bank, bench):
+    r = EpisodeRunner(bank, bench)
+    r._cur_lam_t = 0.5
+    tc = r.text_cal(0.5)
+    crit = r._ape_criterion(tc)
+    X, y = r.sup_feat[0], r.sup_lab[0]
+    T = l2n(tc[:r.nb])
+    feats = [np.vstack([T[b][None], X[y == c]]) for b, c in enumerate(r.base_cls)]
+    num, cnt = np.zeros(bank.dim), 0
+    for i in range(len(feats)):
+        for k in range(len(feats)):
+            if i != k:
+                num += feats[i].sum(0) * feats[k].sum(0)
+                cnt += len(feats[i]) * len(feats[k])
+    ref = -0.7 * num / cnt + 0.3 * T.var(0, ddof=1)
+    assert np.allclose(crit, ref, atol=1e-10)
+
+
+def test_softvar_weights_and_limits(bank, bench):
+    r = EpisodeRunner(bank, bench)
+    base = {'ensemble': {}, 'holistic': None,
+            'segments': {'type': 'prior', 'rank': 'softvar', 'sim': 'visual', 'scope': 'global',
+                         'alpha': 1.0, 'r': 1.0, 'tau': 22.0, 'c': 1.0}}
+    w = r._prior_weights(resolve_config(base, bank)['segments'])
+    assert np.all((w > 0) & (w < 1))
+    Xc, _ = within_class_centered(r.sup_feat[0], r.sup_lab[0], r.base_cls)
+    wvar = (Xc ** 2).mean(0)
+    assert spearman_ok(w, wvar)
+    off = r.vis_cal(resolve_config({'ensemble': {}, 'holistic': None, 'segments': None}, bank))
+    big = copy.deepcopy(base)
+    big['segments']['c'] = 1e9
+    assert np.allclose(r.vis_cal(resolve_config(big, bank)), off, atol=1e-6)
+
+
+def spearman_ok(a, b):
+    from fdrfreq.profile import spearman
+    return spearman(a, b) > 0.999
+
+
+def test_spearman_and_holm_and_hierarchical_bootstrap():
+    from fdrfreq.profile import spearman
+    from fdrfreq.metrics import hierarchical_bootstrap, holm
+    assert math.isclose(spearman([1, 2, 3, 4], [10, 20, 30, 40]), 1.0)
+    assert math.isclose(spearman([1, 2, 3, 4], [4, 3, 2, 1]), -1.0)
+    assert holm([0.01, 0.04, 0.03, 0.2]) == [0.04, 0.09, 0.09, 0.2]
+    r = np.random.RandomState(1)
+    a = [r.rand(400) < 0.6 for _ in range(4)]
+    b = [x | (r.rand(400) < 0.1) for x in a]
+    h = hierarchical_bootstrap(a, b, reps=500)
+    assert h['ci_low'] <= h['delta'] <= h['ci_high'] and h['delta'] > 0 and h['p_boot'] < 0.05
+
+
+def test_profile_prediction_and_transfer_run(bank):
+    from fdrfreq.profile import error_profile, variance_transfer, budget_prediction
+    res = error_profile(bank, split_seeds=(2,), n_sequences=1, budgets=(0.1, 0.25), curve=(0.1, 0.5, 1.0))
+    assert res['n_class_episodes'] > 0
+    assert math.isclose(res['curve']['var']['1'], 1.0) and math.isclose(res['curve']['oracle']['1'], 1.0)
+    assert res['sets']['oracle@0.1']['capture'] >= res['sets']['var@0.1']['capture'] - 1e-12
+    vt = variance_transfer(bank)
+    assert -1.0 <= vt['spearman_base_vs_new_pooled'] <= 1.0
+    bp = budget_prediction(bank, shots=(1, 2, 5, 10))
+    ks = [bp['prediction'][str(k)]['k_const'] for k in (1, 2, 5, 10)]
+    assert all(x >= y for x, y in zip(ks, ks[1:]))
+
+
+def test_chain_fallback_and_new_entries_select(bank, tmp_path):
+    from pathlib import Path
+    from fdrfreq.run import main
+    from fdrfreq.bank import save_bank
+    root = Path(__file__).resolve().parents[1] / 'fdrfreq' / 'configs'
+    entries = json.loads((root / 'paper.json').read_text())['entries']
+    seen = set()
+    for e in entries:
+        if 'chain' in e:
+            assert e['chain'] in seen, e['name']
+        seen.add(e['name'])
+    save_bank(tmp_path / 'bank', bank._arrays, bank.meta, overwrite=True)
+    common = ['--bank', str(tmp_path / 'bank'), '--out', str(tmp_path)]
+    main(['select', *common, '--matrix', str(root / 'paper.json'), '--split-seeds', '2', '--sequences', '1',
+          '--split-mode', 'contiguous', '--objective', 'hm', '--tolerance', '100',
+          '--entries', 'BiMC_ens', 'A1', 'A2', 'M4a', 'DCR_ens', 'S1_soft', 'M4a_ape', 'M4a_apelow',
+          'M4a_k01', 'ULA_fb'])
+    ens = json.loads((tmp_path / 'locked_BiMC_ens.json').read_text())['config']
+    rep = json.loads((tmp_path / 'select_DCR_ens.json').read_text())
+    assert rep['fallback_config'] == ens
+    k01 = json.loads((tmp_path / 'locked_M4a_k01.json').read_text())['config']['segments']
+    assert k01['k'] == 0.1 and k01['rank'] == 'var'
+    ape = json.loads((tmp_path / 'locked_M4a_ape.json').read_text())['config']['segments']
+    assert ape['rank'] == 'ape'
+
+
+def test_evaluate_once_refuses_a_second_test_run(bank, tmp_path):
+    from pathlib import Path
+    from fdrfreq.run import main
+    from fdrfreq.bank import save_bank
+    root = Path(__file__).resolve().parents[1] / 'fdrfreq' / 'configs'
+    save_bank(tmp_path / 'bank', bank._arrays, bank.meta, overwrite=True)
+    common = ['--bank', str(tmp_path / 'bank'), '--out', str(tmp_path)]
+    main(['select', *common, '--matrix', str(root / 'paper.json'), '--split-seeds', '2', '--sequences', '1',
+          '--split-mode', 'contiguous', '--entries', 'BiMC_ens'])
+    lk = str(tmp_path / 'locked_BiMC_ens.json')
+    main(['evaluate-once', *common, '--locked', lk, '--seeds', '1'])
+    log = (tmp_path / 'TEST_LOG.jsonl').read_text().strip().splitlines()
+    assert len(log) == 1 and json.loads(log[0])['name'] == 'BiMC_ens'
+    with pytest.raises(SystemExit):
+        main(['evaluate-once', *common, '--locked', lk, '--seeds', '1'])
+    main(['evaluate-once', *common, '--locked', lk, '--seeds', '1', '--skip-existing'])
+    assert len((tmp_path / 'TEST_LOG.jsonl').read_text().strip().splitlines()) == 1
+    # a configuration that was evaluated on the test set is never re-locked by a later `select`
+    before = Path(lk).read_text()
+    main(['select', *common, '--matrix', str(root / 'paper.json'), '--split-seeds', '2', '--sequences', '1',
+          '--split-mode', 'contiguous', '--entries', 'BiMC_ens'])
+    assert Path(lk).read_text() == before

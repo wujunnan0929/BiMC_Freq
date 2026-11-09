@@ -29,6 +29,21 @@ def holistic(cur, base_vis, src_cur, src_base, lam, tau):
     return l2n((1.0 - lam) * l2n(cur) + lam * delta)
 
 
+def weighted_step(p, w, src_n, src_base, base_vis, r, tau):
+    """Soft channel-wise recomposition with one global donor:
+        p <- n(p + w * (d - p)),  w in [0, 1]^D,
+    where d is the donor of segment_step(scope='global'): the softmax(tau * cos)
+    weighted mean of the top-r unit base prototypes (not renormalised). With a 0/1
+    weight vector this equals segment_step(..., scope='global') with alpha = 1."""
+    p = np.asarray(p, dtype=np.float64)
+    base_vis = l2n(base_vis)
+    r = n_donors(r, len(base_vis))
+    sims = (src_base @ src_n) / np.maximum(np.linalg.norm(src_base, axis=1) * np.linalg.norm(src_n), 1e-12)
+    top = np.argpartition(-sims, r - 1)[:r]
+    d = softmax(float(tau) * sims[top]) @ base_vis[top]
+    return l2n(p + np.asarray(w, dtype=np.float64) * (d - p))
+
+
 def n_donors(r, n_base):
     """Number of donor base classes. A float r <= 1 is a fraction of the base
     classes (1.0 = all of them), so the setting means the same thing on a

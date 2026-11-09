@@ -76,7 +76,12 @@ def cmd_select(a):
     episodes = sel.dev_episodes(bank, a.split_seeds, a.sequences, a.shot, a.split_mode)
     print(f'{len(episodes)} pseudo-incremental episodes (base training images only)')
     out = Path(a.out)
+    shot = a.shot if a.shot is not None else bank.inc_shot
     for name in names:
+        if (out / f'eval_{name}_shot{shot}.json').exists() and (out / f'locked_{name}.json').exists():
+            # PAPER_PLAN 13.9 R0: a configuration that was evaluated on the test set is never re-locked.
+            print(f'[{name}] already evaluated on the test set: keeping locked_{name}.json, not re-selected')
+            continue
         entry = entries[name]
         if 'chain' in entry:
             locked = json.loads((out / f"locked_{entry['chain']}.json").read_text(encoding='utf-8'))
@@ -518,6 +523,119 @@ def cmd_smoke(a):
     print(build_report(out, anchor='A2', fmt='md'))
 
 
+def cmd_evaluate_once(a):
+    """The single benchmark evaluation of newly locked configurations (PAPER_PLAN sec 13).
+    Refuses an entry that already has an evaluation file in --out, and appends one line per
+    evaluated configuration (name, config hash, lock time, evaluation time, seeds, bank) to
+    TEST_LOG.jsonl so every test-set use can be audited."""
+    out = Path(a.out)
+    shot = a.shot
+    if shot is None:
+        shot = int(json.loads((Path(a.bank) / 'meta.json').read_text(encoding='utf-8'))['inc_shot'])
+        a.shot = shot
+    todo = []
+    for path in a.locked:
+        name = json.loads(Path(path).read_text(encoding='utf-8'))['name']
+        target = out / f'eval_{name}_shot{shot}.json'
+        if target.exists():
+            if a.skip_existing:
+                print(f'[{name}] already evaluated on the test set, skipped')
+                continue
+            raise SystemExit(f'{target} exists: {name} was already evaluated on the test set.')
+        todo.append(path)
+    if not todo:
+        return
+    a.locked = todo
+    cmd_evaluate(a)
+    log = out / 'TEST_LOG.jsonl'
+    with open(log, 'a', encoding='utf-8') as fh:
+        for path in todo:
+            lk = json.loads(Path(path).read_text(encoding='utf-8'))
+            fh.write(json.dumps({'name': lk['name'], 'config_hash': lk['config_hash'],
+                                 'locked_at': lk.get('locked_at'), 'bank': lk.get('bank'),
+                                 'shot': shot, 'seeds': a.seeds,
+                                 'evaluated_at': time.strftime('%Y-%m-%d %H:%M:%S')}) + '\n')
+
+
+def cmd_profile(a):
+    from .profile import error_profile, variance_transfer
+    bank = load_bank(a.bank)
+    res = {'variance_transfer': variance_transfer(bank)}
+    vt = res['variance_transfer']
+    print(f"benchmark split: Spearman(base var, new var) {vt['spearman_base_vs_new_pooled']:.3f}; "
+          f"per new class mean {vt['spearman_base_vs_each_new_class_mean']:.3f} (min {vt['spearman_base_vs_each_new_class_min']:.3f}); "
+          f"top-10% Jaccard {vt['jaccard_top10']:.2f}")
+    for shot in a.shots:
+        r = error_profile(bank, a.split_seeds, a.sequences, shot, a.split_mode, budgets=a.budgets,
+                          exclude_support=not a.keep_support)
+        res[str(shot)] = r
+        print(f"== {shot}-shot: {r['n_class_episodes']} class-episodes from {r['n_episodes']} episodes "
+              f"(support images {'excluded' if r['exclude_support'] else 'included'} in the reference mean)")
+        for k, v in sorted(r['sets'].items(), key=lambda kv: (kv[0].split('@')[-1], -kv[1]['concentration'])):
+            print(f"  {k:14s} coverage {100 * v['coverage']:5.1f}%  captured {100 * v['capture']:5.1f}%  x{v['concentration']:.2f}")
+        ag = r['agreement']
+        print('  agreement: ' + ', '.join(f'{k} {v:.3f}' for k, v in ag.items()))
+        fr = list(r['curve']['var'])
+        print('  captured vs budget ' + ' '.join(f'{float(f):>6.2f}' for f in fr))
+        for n, row in r['curve'].items():
+            print(f'    {n:8s}' + ' '.join(f'{100 * row[f]:5.1f}%' for f in fr))
+    write_json(Path(a.out) / 'error_profile.json', res)
+
+
+def cmd_kpredict(a):
+    from .profile import budget_prediction
+    bank = load_bank(a.bank)
+    r_, tau = a.r, a.tau
+    if a.locked:
+        seg = (json.loads(Path(a.locked).read_text(encoding='utf-8'))['config'].get('segments') or {})
+        r_, tau = float(seg.get('r', r_)), float(seg.get('tau', tau))
+    res = budget_prediction(bank, a.shots, r=r_, tau=tau)
+    print(f"g2 {res['g2']:.4f}  mean t2 {res['t2_mean']:.3e}  median var {res['var_median']:.3e}  (r {r_}, tau {tau})")
+    for K, v in res['prediction'].items():
+        print(f"  K={K:>2}: k*(const t2) {v['k_const']:.2f}   k*(per-channel t2) {v['k_channel']:.2f}")
+    write_json(Path(a.out) / 'budget_prediction.json', res)
+
+
+def cmd_devse(a):
+    """Mean +- standard error over the development episodes for locked configurations, and
+    the paired difference to a reference entry (same episodes)."""
+    bank = load_bank(a.bank)
+    d = Path(a.dir)
+    eps = sel.dev_episodes(bank, a.split_seeds, a.sequences, a.shot, a.split_mode)
+    names = [n for n in a.entries if (d / f'locked_{n}.json').exists()]
+    keys = ('last', 'last_base', 'last_novel', 'last_hm', 'avg')
+    vals = {n: [] for n in names}
+    for e in eps:
+        r = EpisodeRunner(bank, e)
+        for n in names:
+            cfg = json.loads((d / f'locked_{n}.json').read_text(encoding='utf-8'))['config']
+            sm = r.run(cfg)['summary']
+            vals[n].append([sm[k] for k in keys])
+    res = {'n_episodes': len(eps), 'ref': a.ref, 'entries': {}}
+    for n in names:
+        v = np.asarray(vals[n])
+        row = {k: {'mean': float(v[:, i].mean()), 'se': float(v[:, i].std(ddof=1) / np.sqrt(len(v)))}
+               for i, k in enumerate(keys)}
+        if a.ref in vals and n != a.ref:
+            dlt = v[:, 0] - np.asarray(vals[a.ref])[:, 0]
+            row['delta_last_vs_ref'] = {'mean': float(dlt.mean()), 'se': float(dlt.std(ddof=1) / np.sqrt(len(dlt)))}
+        res['entries'][n] = row
+        extra = (f"  vs {a.ref} {row['delta_last_vs_ref']['mean']:+.2f}±{row['delta_last_vs_ref']['se']:.2f}"
+                 if 'delta_last_vs_ref' in row else '')
+        print(f"{n:14s} last {row['last']['mean']:.2f}±{row['last']['se']:.2f}  hm {row['last_hm']['mean']:.2f}±{row['last_hm']['se']:.2f}{extra}")
+    write_json(d / f'devse_shot{a.shot}.json', res)
+
+
+def cmd_timing(a):
+    from .profile import dcr_timing
+    bank = load_bank(a.bank)
+    cfg = json.loads(Path(a.locked).read_text(encoding='utf-8'))['config']
+    res = dcr_timing(bank, cfg, shot=a.shot, repeats=a.repeats)
+    print(f"DCR step: {res['ms_per_new_class']:.3f} ms per new class ({res['n_new_classes']} classes; "
+          f"{res['seconds_with']:.4f}s with, {res['seconds_without']:.4f}s without)")
+    write_json(Path(a.out) / f'timing_shot{a.shot}.json', res)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog='fdrfreq')
     sub = p.add_subparsers(dest='cmd', required=True)
@@ -550,6 +668,55 @@ def main(argv=None):
     sp.add_argument('--seeds', type=int, nargs='+', default=[1, 2, 3, 4, 5])
     sp.add_argument('--allow-other-bank', action='store_true')
     sp.set_defaults(func=cmd_evaluate)
+
+    sp = sub.add_parser('evaluate-once')
+    common(sp)
+    sp.add_argument('--locked', nargs='+', required=True)
+    sp.add_argument('--seeds', type=int, nargs='+', default=[1, 2, 3, 4, 5])
+    sp.add_argument('--allow-other-bank', action='store_true')
+    sp.add_argument('--skip-existing', action='store_true',
+                    help='skip entries that already have an evaluation file instead of stopping')
+    sp.set_defaults(func=cmd_evaluate_once)
+
+    sp = sub.add_parser('profile')
+    sp.add_argument('--bank', required=True)
+    sp.add_argument('--out', required=True)
+    sp.add_argument('--shots', type=int, nargs='+', default=[1, 5])
+    sp.add_argument('--budgets', type=float, nargs='+', default=[0.1, 0.25])
+    sp.add_argument('--split-seeds', type=int, nargs='+', default=[2, 3, 4])
+    sp.add_argument('--sequences', type=int, default=5)
+    sp.add_argument('--split-mode', default='contiguous', choices=('random', 'contiguous'))
+    sp.add_argument('--keep-support', action='store_true',
+                    help='include the support images in the all-image reference mean (old errconc behaviour)')
+    sp.set_defaults(func=cmd_profile)
+
+    sp = sub.add_parser('kpredict')
+    sp.add_argument('--bank', required=True)
+    sp.add_argument('--out', required=True)
+    sp.add_argument('--shots', type=int, nargs='+', default=[1, 2, 3, 5, 10])
+    sp.add_argument('--r', type=float, default=1.0)
+    sp.add_argument('--tau', type=float, default=22.0)
+    sp.add_argument('--locked', default=None, help='take r and tau from this locked DCR configuration')
+    sp.set_defaults(func=cmd_kpredict)
+
+    sp = sub.add_parser('devse')
+    sp.add_argument('--bank', required=True)
+    sp.add_argument('--dir', required=True)
+    sp.add_argument('--shot', type=int, required=True)
+    sp.add_argument('--entries', nargs='+', required=True)
+    sp.add_argument('--ref', default='BiMC_ens')
+    sp.add_argument('--split-seeds', type=int, nargs='+', default=[2, 3, 4])
+    sp.add_argument('--sequences', type=int, default=10)
+    sp.add_argument('--split-mode', default='contiguous', choices=('random', 'contiguous'))
+    sp.set_defaults(func=cmd_devse)
+
+    sp = sub.add_parser('timing')
+    sp.add_argument('--bank', required=True)
+    sp.add_argument('--out', required=True)
+    sp.add_argument('--locked', required=True)
+    sp.add_argument('--shot', type=int, default=1)
+    sp.add_argument('--repeats', type=int, default=5)
+    sp.set_defaults(func=cmd_timing)
 
     sp = sub.add_parser('diagnose')
     common(sp)

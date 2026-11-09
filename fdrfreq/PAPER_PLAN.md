@@ -588,3 +588,412 @@ Elsevier 的投稿常规材料：Highlights（3–5 条，每条不超过 85 个
     - 但相对 TEEN：−0.32 / +1.73，−0.27 / −1.23，−0.90 / −0.12。在 ProtoNet 上只有 CUB 5-shot 优于 TEEN。论文中不作"ProtoNet 插件优于 TEEN"的主张。
     - BiMC（P4a_BiMC − BiMC）：+5.98 / +1.14，+3.98 / +0.15，+2.37 / +0.00。
 - **到此为止，所有配置都不再修改。** 后续只修改论文稿与图表。
+
+## 13. 改投 Neurocomputing 的修改计划（2026-11-09）
+
+依据：模拟审稿意见（main_v6，Major Revision）、BiMC 补充材料、FDR / ULA 原文，以及 Neurocomputing 与 Elsevier 的现行要求。前提：不再必须使用频率；目标期刊由 TAI 改为 Neurocomputing。
+
+### 13.1 总体判断
+- 审稿意见里与 TAI 格式有关的条目，改投后不再适用：运行标题、10 页超长费、Impact Statement、IEEE 模板。
+- 决定能否被接收的是四件事：
+  1. 叙事说过头（Major 1）；
+  2. 缺少只用 σ̄² 的软收缩基线（Major 2）；
+  3. 新颖性定位不足（Major 3）；
+  4. 只有一个 backbone（Major 4）。
+- 另外三件影响可信度：5-shot 收益归属（Major 5）、置信区间低估不确定性（Major 6）、"pre-registered" 无法核查（Major 7）。
+- 不再必须使用频率后的处理：
+  - 频率从标题、摘要、引言和方法中全部移除，只在补充材料里保留一段"与 FDR 频率 / 关键词分解的关系"。
+  - 这同时解决了"标题以 Frequency 开头，但方法不用频率"的问题。
+  - 与 blur 相关的行（Table I 的 blur 三行、Table IX、Sec. IV-D）移到补充材料或删去。
+  - FDR 关键词分段保留：它是主要的对比方法。
+- Neurocomputing 的硬性约束：
+  - 常规论文必须与神经网络 / 学习系统直接相关，明确不收"现有算法的单纯组合"。所以主贡献必须是 DCR 和对误差的分析，GDA anchor 只能作为已有的可选组件。
+  - 单盲审，无硬性篇幅限制。
+  - 投稿材料以 13.7 为准（已对照 Guide for Authors 原文核对）。
+
+### 13.2 新版定位与叙事
+- 题目候选：
+  - "Variance-Guided Detail-Channel Recomposition for Training-Free Few-Shot Class-Incremental Learning"
+  - "Where Few-Shot Prototypes Go Wrong: Variance-Guided Channel Recomposition for Training-Free Few-Shot Class-Incremental Learning"
+- 三条贡献（措辞收窄）：
+  1. **诊断。** 冻结 CLIP 特征上，K-shot 原型的误差不成比例地落在 pooled within-class variance 高的通道（集中度为随机通道的 1.7–2.3 倍）。这个排序由基类数据一次算出，新增"基类与新类方差排序的秩相关"作为直接证据。一阶模型定位为"解释"；只有 E9 给出数值预测后，才写"预测"。
+  2. **方法。** DCR 在这些通道上，用相似基类原型构成的 donor 替换 K-shot 值。它闭式、免训练，可以插入 BiMC、BiMC† 和原型分类器。
+  3. **评估。** 只用基类数据选参，测试集只评估一次。误差类型分析说明替换何时优于整体收缩：新类之间互相混淆为主时（CUB），而不是新类被判成基类为主时（CIFAR）。
+- 主结果行改为"BiMC† + DCR"（E4）；"+ GDA anchor"作为单独一行，并注明它来自 Wang et al. (ICLR 2024) 和 FeCAM 一类协方差方法。
+  - 这样 Major 5 的贡献归属问题自然解决，也避开"现有算法组合"的问题。
+  - 1-shot 时 anchor 本来就被选为关闭，主结论不受影响。
+- 1-shot 设定有先例：FDR (ICCV 2025) 用了 CUB200-1-shot（10-way 1-shot）。正文以标准 5-shot 为主，与已发表数字比较；1-shot 作为低样本设定一起报告。
+
+### 13.3 已发表数字与复现数字
+- 复现精度（Last，5-shot 除非注明）：
+
+  | 方法 | 已发表 | 我们复现 | 差 |
+  |---|---|---|---|
+  | BiMC†（CIFAR / CUB / mini） | 73.18 / 72.68 / 92.40 | 73.28 / 72.61 / 92.39 | +0.10 / −0.07 / −0.01 |
+  | BiMC（CIFAR / CUB / mini） | 72.50 / 72.25 / 91.81 | 72.56 / 72.15 / 91.88 | +0.06 / −0.10 / +0.07 |
+  | TEEN（CIFAR / CUB，BiMC 报告） | 61.84 / 69.12 | 63.12 / 68.63 | +1.28 / −0.49 |
+  | FDR 免训练（CUB 5-shot / 1-shot） | 70.15 / 57.37 | 68.96 / 55.20 | −1.19 / −2.17 |
+  | TEEN（CUB 1-shot，FDR 报告） | 54.48 | 54.73 | +0.25 |
+
+  - BiMC / BiMC† 的复现与原文相差在 0.1 以内。
+  - FDR 低 1.2–2.2 点。附录要写明原因：官方 trainer 跑不通，改走官方代码的免训练路径，1-shot 沿用 5-shot 超参。主表同时列出 FDR 的已发表值。
+- 5-shot 平均精度 Aavg，与需训练的方法比较（已发表值取自 FDR Table 1，正式使用前逐篇核对原文）：
+
+  | 数据集 | 我们（免训练） | FDR (LoRA) | EASE | PriViLege | LP-DiF |
+  |---|---|---|---|---|---|
+  | CUB | 77.75 | 77.7 | 75.1 | 74.2 | 74.0 |
+  | CIFAR | 77.63 | 79.3 | 78.0 | 77.2 | 75.1 |
+  | mini | 93.60 | 89.2 | 93.9 | 92.7 | 93.8 |
+
+  免训练方法达到需训练方法的水平，Neurocomputing 版的主比较表应该体现这一点。主表还要加 FeCAM 的已发表值（BiMC 补充材料：CIFAR 68.32、CUB 67.40）。
+
+### 13.4 审稿意见逐条处理（P0：投稿前必做；P1：强烈建议；P2：可选）
+- **Major 1 叙事说过头（P0）**
+  - 措辞："small set / mostly / mainly"一律改为"disproportionately concentrated（随机通道的 1.7–2.3 倍）"。
+  - 补"选中预算下捕获的误差比例"：errconc 曲线延长到 k=1.0。
+  - 补小预算测试点：E3。
+- **Major 2 只用 σ̄² 的软收缩（P0）**：E1。
+- **Major 3 新颖性定位（P0）**
+  - Related Work 补引并逐一写区别：
+    - James–Stein / 经验贝叶斯收缩；
+    - Distribution Calibration（ICLR 2021，用最近基类统计校准新类分布）；
+    - APE（ICCV 2023，按类间差异选 CLIP 通道，用于保留而不是修复）；
+    - GDA 免训练基线（ICLR 2024）；
+    - FeCAM、RanPAC、KLDA；
+    - HyCal（CVPR 2026，余弦加 Mahalanobis 的免训练原型校准）；
+    - arXiv 2611.00022（2026-10，ShrinkSel / QPR）：同样指出噪声新类均值是关键瓶颈，但 QPR 用无标签测试 query，是直推式的；我们是归纳式的，用基类方差逐通道修复。
+  - 补 APE 式通道对照：E2。
+  - 收窄贡献 1：去掉"解释了频率为什么有效、关键词为什么无效"。这两点是实证结果，不是从模型推出来的；频率移除后，这句话本来也要删。
+- **Major 4 单一 backbone（P0）**：E6，ViT-L/14 覆盖三个数据集。另一个模型（ViT-B/32 或 OpenCLIP）只在 mini 上做，为可选项（P2）。
+- **Major 5 5-shot 收益归属（P0）**
+  - 跑 E4；摘要里分别写 DCR 和 anchor 的贡献。
+  - 展开"GDA"缩写；写明新类的 μ_c 用的是哪一个均值。
+  - 说明与 BiMC† 自带协方差项、FeCAM、GDA 基线、HyCal 的区别。
+- **Major 6 统计推断（P1）**：E7。
+- **Major 7 "pre-registered" 无法核查（P0）**
+  - 改称"pre-specified"。
+  - 附录加决策规则表：每条规则的内容、阈值、写下日期和结果，来源为 §12.7–12.13。
+  - 公开代码、锁定配置和 hash（GitHub 加 Zenodo DOI）。
+  - Table III 的 text-donor 一行移出"事先限定的比较"，标为次要比较。
+- **论点与证据对照中 9 处说过头或不准（P0，只需改写）**
+  - Fisher 通道少于随机：改为"在三个数据集中的两个上"（CIFAR 上为 ×1.30）。
+  - mini 5-shot 写的"tie"：改为"对照被选参关闭，DCR 落后 0.08，区间不含 0"。
+  - 两条基于 t_j² 的规则：改为"1-shot 更差，5-shot 打平"。
+  - 开发集与测试集："agree in sign and size"改为"agree in sign"。
+  - "DCR raises n→n least"：限定为"在 LA、全通道收缩、DCR 三者中"。ULA 在 CIFAR 上更低（10.3 对 12.4）。
+  - CUB 同 session 混淆：DCR 减少的主要是跨 session 混淆（19.7→17.8），同 session 几乎不变（21.7→21.2）。原来"related species arrive together"的解释要相应改写。
+  - Fisher 与 σ̄² 的关系：补两种排序的 Spearman 相关（E8b），措辞改为"tends to coincide with"。
+  - highlights 和摘要里不再出现"small / only"；补一句 base 精度的代价。
+- **基线公平性（P1）**
+  - ULA 重调后 5-shot 不如关闭：它的网格有 fallback，但没有设 include_fallback，所以被强制开启。处理方式为 E10a。正文里"不胜过关闭状态的组件会被去掉"这句话要写准确：只适用于设了 include_fallback 或网格含 0 的条目。
+  - BiMC† 未重调：E10b。
+  - 已发表值与复现值对照表：见 13.3。
+  - support 图像的来源要写明：5-shot 用 BiMC 代码（DatasetManager）按种子 1–5 生成并存下的 support（stored_engine_manifest），要核对它是否等同于常用的固定索引文件；1-shot 用种子 1–5 的 replica sampler。
+- **协议细节（P1）**
+  - 750 class-episodes 的计数：CUB 为 50 个伪新类 × 15 = 750；CIFAR / mini 按 30 个伪新类应为 450。核对 errconc 的输出后改正文。
+  - p_all 包含 support 图像，会系统性低估误差：E8d 排除 support 后重算。
+  - 零样本 CLIP 在开发集上 1-shot 和 5-shot 结果不同：因为 query 池随 K 变化，在表注里说明。
+  - "best of three random draws"是在开发集上选的，写明。
+  - Fig. 7 的扫描点改用网格点，只在开发集上重跑。
+  - 定义 fixes / introduces：只算错→对、对→错，不算错误类型之间的转移。
+- **理论（P1）**
+  - Corollary 1 先写"consistent with"；E9 给出数值预测后再决定能否写"predicts"。
+  - Prop. 1 后补一句：K=1 时余项不小，结论的支撑主要来自实证集中度。
+  - 写明特征是否先做逐图 L2 归一化。
+  - 基类与新类方差的秩相关：E8a。
+- **一致性与机械检查（P0）**
+  - 展开 GDA、LLM、EB、MSE（频率移除后 DCT 不再出现）。
+  - 符号冲突：
+    - 通道集合改为 𝒢，范数直接写 ‖μ‖；
+    - donor 误差改为 δ_j²；
+    - donor 改为 q_c；
+    - blur 尺度和频带编号随频率一起删除。
+  - "EB noise ratio"与"Rank by σ̄²/t²"统一名称。
+  - Fig. 1 与正文统一用 𝒮_k。
+  - 拼写统一为美式。
+- **结构（P0）**
+  - Sec. VI 拆成"Results"和"Analysis"两节，消融单列一个小节。
+  - 开发集明细（Table IV）、决策规则表、复现对照表移到附录。
+  - "研究过程"写法收到附录的决策规则表里。
+  - 每个论点在正文只留 2–3 个数字，其余指向表格。
+  - 摘要里写成"the BiMC ensemble (BiMC†)"。
+
+### 13.5 新实验清单（规则在运行前写下；除 E6 外都只需 CPU，跑在已缓存的特征上）
+- **E1 只用 σ̄² 的软收缩**
+  - 设定：m_j = σ̄_j² / (σ̄_j² + C)，C ∈ {0.25, 0.5, 1, 2, 4, 8} × median(σ̄²)；donor 与 DCR 相同（全局排序，r、τ 网格相同）；强度 α ∈ {0.7, 1}；chain 到 A2。
+  - 流程：6 个设定先在开发集上选参，再测试一次。
+  - 规则：
+    - 若软收缩在 6 个设定中至少 4 个的测试 Last 不低于 DCR，或所有设定的区间都覆盖 0：正文改写为"DCR 是 σ̄² 收缩的硬阈值近似，两者精度相当，保留硬版本是因为只需一次排序"。
+    - 否则：只在测试区间 > 0 的设定上写"硬替换更好"。
+    - 无论哪种结果，方法都不变。
+- **E2 APE 式通道对照**
+  - 设定：用 APE 的准则（类间相似度与类间方差的加权）在基类原型上给通道排序。两个对照：替换 APE 认为最重要的通道（APE-top），以及最不重要的通道（APE-bottom）。预算与 DCR 相同，α 重新选。
+  - 规则：只作为对照报告，进入 Fig. 3 和 Table III。
+- **E3 小预算测试点（1-shot，三个数据集）**
+  - 设定：k 固定为 0.1 和 0.2，r、τ、α 在开发集上重选，然后测试一次。
+  - 规则：在正文中标为事后分析（post hoc）；与"选中预算下的误差捕获比例"一起报告。
+- **E4 不带 anchor 的 BiMC† + DCR**
+  - 设定：chain 到 BiMC_ens，网格与 M4a 相同；开发集选参，然后测试。
+  - 规则：作为主表里的"ours"行；M4a 作为"+ GDA anchor"行。1-shot 时它应与 M4a 完全一致，跑完核对。
+- **E5 shot 扫描，K ∈ {1, 2, 3, 5, 10}**
+  - 设定：K = 2、3、10 是新增的。每个 K 跑 BiMC_ens、A1/A2、E4、M4a：开发集选参，然后每个 K 测试一次。
+  - 输出：图上画两条线：增益随 K 的变化；选出的 k 随 K 的变化，并叠加 E9 的预测值。
+- **E6 ViT-L/14（需要 GPU 提特征）**
+  - 提特征：三个数据集，不提 blur、DCT 和 aug；如果保留 FDR 基线，还要提 keywords。
+  - 分析：errconc 给出 ViT-L/14 版的 Table I。
+  - 开发集选参：
+    - 基线：ZS_desc、Proto、TEEN、BiMC、BiMC_ens、LA、ULA_fb（E10a）；
+    - 锚点：A1、A2；
+    - 我们的方法与对照：E4、M4a、random、lowvar、fisher、shrink-all、E1。
+  - 然后测试一次。
+  - 规则：沿用冻结的网格和规则，不针对新骨干重新设计。
+- **E7 统计**
+  - 两层 bootstrap：先抽种子，再在种子内抽图像。
+  - 报告种子级配对差的均值 ± 标准差。
+  - 对主要比较族（C1–C3 × 6 个设定）做 Holm 校正。
+  - 开发集表加 episode 级标准误：需要在开发集上重新评估锁定配置，并输出每个 episode 的指标。
+- **E8 诊断**
+  - (a) 基类 pooled σ̄² 与新类 within-class 方差的 Spearman 相关。新类方差用全部训练图像计算，只作分析。
+  - (b) Fisher 排序与 σ̄² 排序的 Spearman 相关。
+  - (c) 选中预算下的误差捕获比例。
+  - (d) p_all 排除 support 图像后重算 errconc。
+  - (e) 核对每个数据集的 class-episode 数。
+- **E9 Corollary 1 的数值预测**
+  - 设定：在开发集上估计 g² 和 t²（已有 _eb_stats），代入公式算 k*(K)，与 E5 实际选出的 k 对比。
+  - 规则：对不上时，正文只写"方向一致"。
+- **E10 基线公平性**
+  - (a) ULA_fb：给 ULA 设 include_fallback，重新选参并测试；正文写明这是对基线的修正。
+  - (b) BiMC† 重调：在 β、λ_T、BiMC 视觉校准的 λ / τ 上搜索。规则：若在任一设定上开发集增益 ≥ 0.3，再加跑"重调后的 BiMC† + DCR"作为稳健性行；主方法不变。
+  - (c) 可选（P2）：GDA 基线（Wang et al.）单独成行。
+  - (d) FeCAM：引用 BiMC 报告的已发表值。
+- **E11 耗时**：每个新类的 DCR 耗时（毫秒）。
+- 全部新的测试评估各只跑一次（脚本带 TEST_DONE 保护）；正文区分事先限定的分析和事后分析（E3、E10a）。
+
+### 13.6 新稿件结构（elsarticle，单栏投稿版）
+1. Introduction
+2. Related Work
+   - FSCIL
+   - 免训练的 VLM 适配：Tip-Adapter、APE、GDA 基线、BiMC、FDR、HyCal
+   - 原型校准与统计迁移：Distribution Calibration、TEEN、原型修正、James–Stein 收缩、ShrinkSel / QPR
+   - 基于协方差的持续学习：FeCAM、RanPAC、KLDA
+3. Preliminaries：问题设定与 BiMC†
+4. Where Is a Few-Shot Prototype Wrong?
+   - 测量方法
+   - 通道排序比较（含 APE 和 Fisher）
+   - 一阶模型
+   - 跨类共享的方差 profile（E8a）
+5. Detail-Channel Recomposition
+   - donor 构造
+   - 通道集合
+   - 替换步骤
+   - MSE 视角与软版本（E1）
+   - 可选的协方差 anchor
+   - 复杂度
+6. Experimental Setup
+   - 数据集与 1 / 5-shot 设定
+   - 骨干网络
+   - 基线（复现值与已发表值）
+   - 只用基类数据的选参协议
+   - 评价指标与统计方法
+7. Results
+   - 5-shot 标准设定：与已发表方法比较，含需训练的方法
+   - 1-shot 结果
+   - 配对比较
+   - ViT-L/14
+   - shot 扫描
+8. Analysis
+   - 选哪些通道
+   - 替换 vs 收缩
+   - 误差类型
+   - 消融
+   - 插件实验
+   - 超参与敏感性
+   - 耗时
+9. Discussion and Limitations
+10. Conclusion
+- 正文之后：Declarations（利益冲突、CRediT、数据可用性、经费、生成式 AI 声明）
+- 附录：
+  - A 证明
+  - B 协议细节与决策规则表
+  - C 已发表值与复现值
+- 补充材料：开发集明细表、频率分析、额外图
+
+### 13.7 格式与合规清单（已对照 Guide for Authors 原文核对，网页打印版 2026-11-09）
+- **文章类型与审稿**
+  - 投 Type 1 Regular article：必须与神经网络 / 学习系统直接相关，不收"现有算法的单纯组合"。cover letter 和引言第一段先回答"这对学习系统意味着什么"。
+  - 单盲审：编辑先判断是否送审，送审至少两位审稿人。稿件上写作者信息。
+- **源文件**
+  - LaTeX 用 Elsevier 模板（elsarticle），提交全部可编辑源文件（.tex、.bib 或 .bbl、图）；PDF 不能作为源文件。
+  - 双栏只允许 LaTeX 稿件使用。投稿版用单栏（`preprint, review`）。
+- **标题页**
+  - 标题简洁，尽量不用缩写和公式：标题里不出现 FSCIL、DCR。
+  - 作者全名；单位用小写上标字母，给完整地址和国家。
+  - 只设一位通讯作者，其邮箱会随文章公开。
+- **摘要**
+  - 不超过 250 词，能独立阅读。
+  - 写明目的、做法、主要发现及其统计显著性、结论。
+  - 不放参考文献；不用非标准缩写，必须用的在摘要内首次出现时定义。
+- **关键词**
+  - 1–7 个，英文；尽量不用带 and / of 的多词短语；缩写只用领域内公认的。
+  - 草稿（7 个）：few-shot class-incremental learning; vision-language models; CLIP; training-free adaptation; prototype calibration; feature channel selection; continual learning。
+- **Highlights**
+  - Guide 写的是"鼓励提供"，不是强制。我们提供。
+  - 作为单独的可编辑文件上传，文件名里要有 "highlights"（如 `highlights.docx`）。
+  - Guide 原文在这一条之后正好分页，打印版缺了后面的细则。按 Elsevier 通行要求写：3–5 条，每条不超过 85 个字符（含空格）。
+  - 草稿（已核对字符数）：
+    - K-shot CLIP prototype errors are disproportionately large in high-variance channels（83）
+    - Base-class statistics locate these channels before any new class arrives（72）
+    - Replacing them with a donor from similar base classes repairs new prototypes（76）
+    - Training-free and closed form; all settings chosen without test images（70）
+    - Error-type analysis explains when channel replacement beats full shrinkage（74）
+- **公式、表、图**
+  - 公式：可编辑文本，不用图片；行内小分式用斜线（如 σ̄_j²/t_j²）；e 的幂写成 exp；变量用斜体；行间公式连续编号。
+  - 表：可编辑文本；不用竖线和底纹；表注放在表下；全部在正文中引用，按出现顺序编号；不重复正文或图里已有的数据。
+  - 图：每张图单独一个文件，按 Figure_1、Figure_2 命名；全部在正文中引用；每张图都要有图注（简短标题不画在图上，加说明）；图中文字不能过小。
+- **生成式 AI**
+  - 声明放在参考文献之前，单独一节，标题为 "Declaration of generative AI and AI-assisted technologies in the manuscript preparation process"。
+  - 内容按 Guide 模板写工具名和用途："During the preparation of this work the author(s) used [NAME OF TOOL/SERVICE] to [REASON]. After using this tool/service, the author(s) reviewed and edited the content as needed and take(s) full responsibility for the content of the published article."
+  - 只用于语法、拼写、参考文献检查的工具不用声明。
+  - 图的规则：
+    - 说明性的图（Fig. 1 框架图）可以由 AI 协助制作。
+    - 数据图只要是由数据经可复现的计算直接生成，也可以由 AI 协助。
+    - 凡是用生成式 AI 工具制作的图，都要在每张图的图注里注明，并在总声明里提到。
+    - 我们的数据图由脚本（figsrc/charts.py）从实验输出生成，脚本由 AI 协助编写。稳妥起见按"由 AI 协助制作"处理，每个图注加一句说明。
+  - AI 不能列为作者。
+  - Guide 明确要求每条参考文献都对应真实存在的文献，并提醒 AI 生成的参考文献可能有误。投稿前逐条核对。
+- **研究数据（Option C，必须做）**
+  - 要求：研究数据存入合适的仓库，投稿时提供链接；做不到要写明原因，该说明会随文章发表。
+  - 计划：GitHub 代码库加 Zenodo 存档（DOI）。内容包括：
+    - fdrfreq 代码与 configs；
+    - 全部 locked_*.json 及其 hash，TEST_LOG.jsonl；
+    - 每个配置的 eval_*.json 和逐图预测 pred_*.npz；
+    - errtypes、error_profile 等分析输出。
+  - 特征库体积大，不上传：提供提取脚本和 meta.json，正文写明可由公开数据集重新生成。
+  - Data in Brief / MethodsX 联合投稿是可选项（另收 APC），不做。
+- **声明**
+  - 利益冲突：在投稿系统的 declarations tool 里填写，把生成的 Word 文件上传；没有可声明的就选 "I have nothing to declare"。
+  - 经费：按 Guide 的标准格式列出；没有经费时写 "This research did not receive any specific grant from funding agencies in the public, commercial, or not-for-profit sectors."
+  - CRediT：通讯作者按 CRediT 角色写明每位作者的贡献。
+  - 致谢：单独一节，放在参考文献正前方；不放在标题页或脚注里。
+- **作者简介（Vitae）**：每位作者一段不超过 100 词的简介，加一张证件照（单独的图文件）；简介用可编辑格式（Word），不能是 PDF。
+- **参考文献**
+  - 投稿时格式不作严格要求，但要前后一致。正文用方括号数字、按出现顺序编号，elsarticle-num 即可。尽量给 DOI。
+  - 预印本要标明 "preprint" 或服务器名并给 DOI；已正式发表的引正式版。ShrinkSel / QPR 目前是 arXiv 预印本。
+  - 引用软件时写创建者、名称、发布处、日期、标识符（DOI 优先）、版本。至少引用 CLIP、BiMC、FDR 的官方代码和我们自己的 Zenodo 存档。
+  - 摘要里不引文献。
+- **结构**：章节编号 1、1.1、1.1.1；摘要不编号；附录用 A、B，公式、表、图分别编号为 Eq. (A.1)、Table A.1、Fig. A.1。
+- **补充材料**：与稿件同时提交，在正文中逐个引用，每个文件有简短说明。它会按原样在线发布、不经排版校对，所以要按正式稿的标准写。
+- **其他**
+  - 单位用 SI（耗时用 ms）。
+  - Guide 没有提 graphical abstract，不做。
+  - 推荐审稿人和 ORCID 不在 Guide 里，按投稿系统的提示填。
+  - 预印本可以发（SSRN 或 arXiv），不影响审稿。
+  - 混合期刊，开放获取可选。
+  - 投稿前按 Guide 末尾的 checklist 再查一遍：拼写语法、正文引用与参考文献一一对应、第三方版权材料已获许可。
+  - Guide 这一版没有找到对英式 / 美式拼写的要求，仍统一用美式。
+
+### 13.8 执行顺序
+- **A. 写代码**（已完成，2026-11-09）
+  - 新条目（configs/paper.json）：DCR_ens（E4）、S1_soft（E1）、M4a_ape / M4a_apelow（E2）、M4a_k01 / M4a_k02（E3）、ULA_fb（E10a）、BiMC_rt / BiMC_rt_D（E10b）。
+  - 新代码：
+    - pipeline.py：APE 通道准则、σ̄² 软权重；
+    - recompose.py：逐通道加权的重组 `weighted_step`；
+    - select.py：`fallback: "chain"`；
+    - metrics.py：两层 bootstrap、Holm；
+    - profile.py：E8 误差 profile、方差迁移、E9 预算预测、E11 耗时；
+    - run.py：`evaluate-once`、`profile`、`kpredict`、`devse`、`timing`；
+    - report.py：`--hier-json`、`--holm`。
+  - 测试：tests/test_fdrfreq.py 新增 7 个，共 34 个，全部通过。
+  - 脚本：dev_extra / final_extra / holm（E1–E4、E7–E11）、dev_shots / final_shots（E5）、dev_backbone / final_backbone（E6）。都在合成 bank 上端到端跑通。重复运行 final_* 会被 evaluate-once 拒绝。
+  - 规则已写进 13.9，写在任何新实验运行之前。
+- **B. ViT-B/16 开发集**（你来跑，只需 CPU）：`dev_extra.sh`、`dev_shots.sh`，三个数据集各一次，把输出发回。
+- **C. ViT-L/14**（与 B 并行，需要 GPU）：`dev_backbone.sh` 提特征并在开发集上选参，把输出发回。
+- **D. 测试**：我检查 B、C 的输出（只按 13.9 R0 列出的几项检查）之后，你再跑 `final_extra.sh`、`final_shots.sh`、`final_backbone.sh`，最后跑 `holm.sh`。
+- **E. 改写稿件**（我来做；可以和 B–D 并行开始）
+  - 转到 elsarticle，按 13.6 重排结构。
+  - 去掉频率，补 Related Work，修正全部说过头的论点和 13.10 列出的事实问题，统一符号和缩写。
+  - 测试结果出来后换上新的表和图。
+- **F. 投稿材料**
+  - 声明、highlights、cover letter、vitae；补充材料；公开代码（GitHub 加 Zenodo）。
+  - 最后按 Neurocomputing 的标准再做一次模拟审稿。
+
+### 13.9 新实验的事先规则（2026-11-09 写定，在任何新实验运行之前）
+- **R0 通用**
+  - 6 个设定 = ViT-B/16 上的 3 个数据集 × {1, 5}-shot。测试指标是最后一个 session 的 Last（%）。
+  - 判定用两层 bootstrap 的 95% CI：先抽 support 种子，再在种子内抽测试图像，4000 次。同时报告种子内配对 bootstrap 的 CI、种子级配对差的均值 ± 标准差、每个种子的 McNemar。
+  - 顺序：新条目先只在开发集上选参，输出发回由我检查，再各跑一次测试。测试走 evaluate-once：已有测试结果的条目一律拒绝；每次评估写入 TEST_LOG.jsonl（含配置 hash 和锁定时间）。
+  - 测试前我只检查四项，检查不改任何网格或规则：
+    1. 有无报错或缺文件；
+    2. R4 的 1-shot 一致性；
+    3. R10(b) 是否触发；
+    4. 选出的参数是否落在网格边界（只记录，不扩网格）。
+  - 测试结果不用于任何选择。测试之后，paper.json 里已锁定的条目不再修改。
+  - 12.13 的结论保持冻结（当时用种子内 bootstrap 判定）。两层 bootstrap 与 Holm 的结果并列报告。如果某个结论在它们之下不再成立，正文两种口径都写，例如"种子内 bootstrap 下显著，Holm 校正后的两层 bootstrap 下不显著"。
+- **R1（E1，σ̄² 软收缩）**：S1_soft 与 M4a 比较，两者都以 A2 为起点。记 Δ = Last(M4a) − Last(S1_soft)。
+  - 若 6 个设定中至少 4 个 Δ ≤ 0，或者 6 个设定的 CI 全部覆盖 0：
+    - 正文写"DCR 是 σ̄² 收缩的硬阈值近似，两者精度相当；保留硬版本，因为它只需一次排序，预算 k 可以直接解释"；
+    - 软版本作为等价变体写进方法一节。
+  - 否则：只在 CI 下界 > 0 的设定上写"硬替换优于软收缩"；CI 上界 < 0 的设定写"软收缩更好"；其余写"差异在误差内"。
+  - 无论哪种结果，方法都不变。
+- **R2（E2，APE 通道对照）**：M4a_ape 替换 APE 最看重的通道，M4a_apelow 替换 APE 最不看重的通道。预算、donor 与 M4a 相同，只重选 α。
+  - 只作对照，放进通道选择的表和图，不进入 Holm 族。
+  - 只在 M4a − M4a_ape（或 M4a_apelow）的 CI 下界 > 0 的设定上写"方差排序优于 APE 排序"。
+  - 任一设定 CI 上界 < 0：如实写 APE 排序在该设定更好，"选哪些通道"的结论只限于其余设定。
+- **R3（E3，1-shot 小预算）**：M4a_k01 / M4a_k02 固定 k = 0.1 / 0.2。
+  - 正文标为事后分析（post hoc），与选中预算下的误差捕获比例一起报告。
+  - 不作显著性主张，只描述只改 10% / 20% 通道时保留了多少增益：(Last(k01) − Last(BiMC†)) / (Last(M4a) − Last(BiMC†))。
+- **R4（E4，BiMC† + DCR，不带 anchor）**
+  - DCR_ens 是主表的 "Ours" 行；M4a 是 "+ covariance anchor" 行，anchor 的贡献单独写（M4a − DCR_ens）。
+  - 1-shot 上 A2 被选为关闭，所以 DCR_ens 与 M4a 的开发集选参结果（参数和各划分指标）应完全相同，测试的逐图预测也应一致。不一致就先查原因，不进入测试。
+  - "BiMC† + DCR 优于 BiMC†"只在 CI 下界 > 0 的设定上写。摘要报告成立的设定数和增益范围。
+- **R5（E5，shot 扫描）**：K ∈ {2, 3, 10}，加上已有的 1 和 5。每个 K 对 BiMC、BiMC†、A2、DCR_ens、M4a 各测试一次。
+  - 只描述趋势：增益随 K 的变化、选出的 k 随 K 的变化；每个点给 CI。不进入 Holm 族。
+  - 若 K = 10 时 DCR_ens − BiMC† 的 CI 覆盖 0 或为负：正文写"增益在 K = 10 时消失"，并在局限一节说明。
+- **R6（E6，ViT-L/14）**
+  - 沿用冻结的网格、规则和选参协议，不针对新骨干改动。条目见 dev_backbone.sh：没有提 blur 特征，所以没有 freq 对照；没有提关键词，所以没有 FDR 基线。
+  - parity 闸门：mini 5-shot 上 BiMC / BiMC† 的测试 Last 与 BiMC 补充材料 Table 4 的已发表值（94.46 / 94.46）相差不超过 0.5 才继续；超过就停下排查特征提取，不进入选参。
+  - 只在 CI 下界 > 0 的设定上写"在 ViT-L/14 上同样提升"，其余如实写。
+  - Holm 按 ViT-L/14 单独成族（`TAG=vitl14 bash fdrfreq/scripts/holm.sh`）。那里没有 freq 对照，所以 m = 7 × 6 = 42；脚本会列出没找到、因而没计入 m 的成员。
+  - BiMC 补充材料里 ViT-L/14 mini 5-shot 的 ZS / 原型 / TEEN / FeCAM 已发表值，放进 ViT-L/14 表作参照。
+- **R7（E7，Holm 族）**
+  - 族 = 8 个比较 × 6 个设定 = 48 个假设：
+    - DCR_ens − BiMC†（R4）；
+    - M4a − BiMC†（C1）；
+    - M4a − A2（C2）；
+    - M4a − M4a_random / lowvar / fisher / freq / soft（C3）。
+  - 1-shot 时有的比较彼此相同（anchor 关闭），仍分别计数，所以校正偏保守。
+  - holm.sh 只读 1-shot 和 5-shot 目录，shot 扫描不进入这个族。脚本会列出族里没找到的成员；ViT-B/16 上应当一个都没有，否则先补齐再报告。
+  - 用两层 bootstrap 的 p 值（下限 1/4000）。正文的"显著"指 Holm 校正后 p < 0.05；未校正的 CI 只作描述。
+  - 其余比较（R1、R2、R3、R5、R10）报告未校正的两层 bootstrap CI，标为次要比较。
+- **R8（E8，诊断；只用开发集和训练图像）**
+  - (a) 基类 σ̄² 与新类类内方差的 Spearman ρ。判定用 error_profile.json 里 variance_transfer 的 spearman_base_vs_new_pooled（基类的 pooled σ̄² 对基准新类的 pooled 类内方差；新类方差用全部训练图像计算，只作分析，不参与任何选择）；逐类 ρ 的均值和最小值作补充：
+    - 三个数据集都 ≥ 0.7：写"方差 profile 在类之间大体共享"；
+    - 都 ≥ 0.4 但不都 ≥ 0.7：写"中等程度共享"；
+    - 有数据集 < 0.4：写"共享较弱"，并把这一假设列入局限。
+  - (b) Fisher 与 σ̄² 排序的 Spearman ρ ≥ 0.5 写"tends to coincide with"，否则写两者不同。
+  - (c)(d) Table I 改为固定预算 10% / 25% 下的误差集中度（排除 support 图像），加上到 k = 1.0 的捕获曲线和选中预算下的捕获比例。不论数值如何都替换原表；正文的"1.7–2.3 倍"改成新表的范围。
+  - (e) class-episode 数以 error_profile.json 的 n_class_episodes 为准。
+- **R9（E9，Corollary 1 的数值预测）**
+  - 主预测用 k*_const(K)（单一 t²，即推论本身的假设）；k*_channel 作补充。
+  - r、τ 固定取 1-shot 锁定的 M4a 配置，所以预测只随 K 变化。
+  - 对照对象：E5 中 DCR_ens 在每个 K 上选出的 k；选为关闭时记为 0。
+  - 判定：把预测值取到最近的网格点（{0, 0.1, …, 0.8, 1.0}）。
+    - 至少 2 个数据集上，5 个 K 中至少 4 个的选出值等于该网格点或与之相邻：正文写"predicts"。
+    - 否则，若选出的 k 随 K 不增（允许一个网格步的波动）：写"consistent with the direction"。
+    - 两者都不满足：推论只作解释，正文写明预测与选参不符。
+- **R10（E10，基线公平性）**
+  - (a) ULA_fb：ULA 的网格加入关闭选项后重新选参，测试一次。正文写明这是对基线的修正，原 ULA 行移到附录。
+  - (b) BiMC_rt：在 β、λ_T 和 BiMC 视觉校准的 λ / τ 上重调，候选里含已发表默认值。
+    - 某设定上开发集 Last 比 BiMC† 高 ≥ 0.3 时，才在该设定加跑 BiMC_rt_D（重调后的 BiMC† + DCR）。
+    - 主比较仍以已发表默认值的 BiMC† 为准，因为它与原文数字相差在 0.1 以内。
+    - BiMC_rt 作为"重调后的 BiMC†"列进主表。若有 BiMC_rt_D，只在 BiMC_rt_D − BiMC_rt 的 CI 下界 > 0 的设定上写"重调基线后增益仍在"。
+  - (c) GDA 基线单独成行是可选项；(d) FeCAM 引用已发表值。
+- **R11（E11，耗时）**：报告每个新类的 DCR 耗时（ms），以及它占原型构造时间的比例。
+
+### 13.10 稿件中要改正的事实问题（本轮核对代码时发现）
+1. **donor 公式。** 代码（recompose.segment_step / weighted_step）里，donor 是 top-r 个单位基类原型的 softmax 加权平均，本身不再归一化；只有重组后的整个向量做归一化：q_c = Σ_{b∈𝒩_r(c)} w_cb μ̄_b，p̃_c = n(p̂_c + α m ⊙ (q_c − p̂_c))。稿件 donor 公式里的 n(·) 要删掉。BiMC 的整体校准（recompose.holistic）才对 donor 归一化，两处要分开写。
+2. **Table I。** 原表的集中度是在 blur 掩码并集的预算下算的，按 R8(c)(d) 换成固定预算的版本。
+3. **class-episode 数。** CUB 为 50 × 15 = 750；CIFAR、mini 为 30 × 15 = 450。
+4. **特征。** 每张图在提取时做 L2 归一化，以 float16 存储；σ̄²、原型等统计量在此之上用 float64 计算。正文写明。
+5. **ULA。** 12 节的 ULA 重调网格有 fallback，但没有设 include_fallback。正文"不胜过关闭状态的组件会被去掉"只适用于设了 include_fallback 或网格含 0 的条目（见 R10(a)）。
+6. **1-shot 的主表行。** 预期 DCR_ens 与 M4a 在 1-shot 上相同（R4）；确认后表中合并为一行并加注。

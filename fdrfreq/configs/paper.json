@@ -2489,6 +2489,338 @@
     "ula": null
    },
    "include_fallback": true
+  },
+  {
+   "name": "DCR_ens",
+   "chain": "BiMC_ens",
+   "note": "sec 13 E4: DCR on BiMC-dagger without the GDA anchor (the paper's main 'ours' row); same frozen grid as M4a; switched-off point = BiMC_ens itself",
+   "base": {
+    "holistic": null,
+    "segments": {
+     "type": "prior",
+     "rank": "var",
+     "sim": "visual",
+     "scope": "global",
+     "alpha": 1.0,
+     "r": 1.0,
+     "tau": 22.0
+    }
+   },
+   "grid": {
+    "segments.k": [
+     0.1,
+     0.2,
+     0.3,
+     0.4,
+     0.5,
+     0.6,
+     0.7,
+     0.8,
+     1.0
+    ],
+    "segments.r": [
+     0.25,
+     0.5,
+     1.0
+    ],
+    "segments.tau": [
+     16.0,
+     22.0,
+     32.0
+    ],
+    "segments.alpha": [
+     0.7,
+     1.0
+    ]
+   },
+   "fallback": "chain",
+   "include_fallback": true
+  },
+  {
+   "name": "S1_soft",
+   "chain": "A2",
+   "note": "sec 13 E1: sigma^2-only soft shrinkage w_j = var_j/(var_j + c*median var) with the DCR donor; own grid (c, r, tau, alpha); compared with M4a",
+   "base": {
+    "holistic": null,
+    "segments": {
+     "type": "prior",
+     "rank": "softvar",
+     "sim": "visual",
+     "scope": "global",
+     "alpha": 1.0,
+     "r": 1.0,
+     "tau": 22.0,
+     "c": 1.0
+    }
+   },
+   "grid": {
+    "segments.c": [
+     0.25,
+     0.5,
+     1.0,
+     2.0,
+     4.0,
+     8.0
+    ],
+    "segments.r": [
+     0.25,
+     0.5,
+     1.0
+    ],
+    "segments.tau": [
+     16.0,
+     22.0,
+     32.0
+    ],
+    "segments.alpha": [
+     0.7,
+     1.0
+    ]
+   },
+   "fallback": {
+    "segments": null,
+    "holistic": {
+     "donor": "visual",
+     "lam": 0.1,
+     "tau": 16.0
+    }
+   },
+   "include_fallback": true
+  },
+  {
+   "name": "M4a_ape",
+   "chain": "M4a",
+   "note": "sec 13 E2: same k, r, tau as M4a, channels ranked by APE's training-free criterion (kept by APE); alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "ape"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M4a_apelow",
+   "chain": "M4a",
+   "note": "sec 13 E2: same k, r, tau as M4a, channels ranked by APE's training-free criterion (discarded by APE); alpha re-tuned",
+   "base": {
+    "segments": {
+     "type": "prior",
+     "rank": "ape_low"
+    }
+   },
+   "grid": {
+    "segments.alpha": [
+     0.5,
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M4a_k01",
+   "chain": "A2",
+   "note": "sec 13 E3 (post hoc): budget fixed at k=0.1; r, tau, alpha re-selected on development episodes; no switched-off point",
+   "base": {
+    "holistic": null,
+    "segments": {
+     "type": "prior",
+     "rank": "var",
+     "sim": "visual",
+     "scope": "global",
+     "alpha": 1.0,
+     "r": 1.0,
+     "tau": 22.0,
+     "k": 0.1
+    }
+   },
+   "grid": {
+    "segments.r": [
+     0.25,
+     0.5,
+     1.0
+    ],
+    "segments.tau": [
+     16.0,
+     22.0,
+     32.0
+    ],
+    "segments.alpha": [
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "M4a_k02",
+   "chain": "A2",
+   "note": "sec 13 E3 (post hoc): budget fixed at k=0.2; r, tau, alpha re-selected on development episodes; no switched-off point",
+   "base": {
+    "holistic": null,
+    "segments": {
+     "type": "prior",
+     "rank": "var",
+     "sim": "visual",
+     "scope": "global",
+     "alpha": 1.0,
+     "r": 1.0,
+     "tau": 22.0,
+     "k": 0.2
+    }
+   },
+   "grid": {
+    "segments.r": [
+     0.25,
+     0.5,
+     1.0
+    ],
+    "segments.tau": [
+     16.0,
+     22.0,
+     32.0
+    ],
+    "segments.alpha": [
+     0.7,
+     1.0
+    ]
+   }
+  },
+  {
+   "name": "ULA_fb",
+   "chain": "BiMC_ens",
+   "base": {
+    "ula": {
+     "a": 8.0
+    }
+   },
+   "grid": {
+    "ula.tau": [
+     0.005,
+     0.01,
+     0.02,
+     0.04,
+     0.08,
+     0.16,
+     0.32
+    ],
+    "ula.lam": [
+     0.04,
+     0.1,
+     0.4,
+     1.0
+    ],
+    "ula.tth": [
+     0.06,
+     0.5,
+     0.8,
+     0.95
+    ],
+    "ula.T": [
+     0.25,
+     1.0
+    ]
+   },
+   "fallback": {
+    "ula": null
+   },
+   "include_fallback": true,
+   "note": "sec 13 E10a: ULA re-tuned with its switched-off point (ULA's original grid had none, so it was forced on)"
+  },
+  {
+   "name": "BiMC_rt",
+   "note": "sec 13 E10b: BiMC-dagger re-tuned on the development episodes (beta, lambda_T, visual-step lambda/tau); switched-off point = published BiMC_ens settings",
+   "base": {
+    "ensemble": {}
+   },
+   "grid": {
+    "beta": [
+     0.4,
+     0.5,
+     0.6,
+     0.7,
+     0.8,
+     0.9
+    ],
+    "lambda_t": [
+     0.3,
+     0.5,
+     0.7
+    ],
+    "holistic.lam": [
+     0.0,
+     0.05,
+     0.1,
+     0.2,
+     0.3
+    ],
+    "holistic.tau": [
+     8.0,
+     16.0,
+     32.0
+    ]
+   },
+   "fallback": {
+    "beta": null,
+    "lambda_t": 0.5,
+    "holistic": {
+     "donor": "visual",
+     "lam": 0.1,
+     "tau": 16.0
+    }
+   },
+   "include_fallback": true
+  },
+  {
+   "name": "BiMC_rt_D",
+   "chain": "BiMC_rt",
+   "note": "sec 13 E10b (conditional): DCR on the re-tuned BiMC-dagger, run only if BiMC_rt gains >= 0.3 dev Last over BiMC_ens",
+   "base": {
+    "holistic": null,
+    "segments": {
+     "type": "prior",
+     "rank": "var",
+     "sim": "visual",
+     "scope": "global",
+     "alpha": 1.0,
+     "r": 1.0,
+     "tau": 22.0
+    }
+   },
+   "grid": {
+    "segments.k": [
+     0.1,
+     0.2,
+     0.3,
+     0.4,
+     0.5,
+     0.6,
+     0.7,
+     0.8,
+     1.0
+    ],
+    "segments.r": [
+     0.25,
+     0.5,
+     1.0
+    ],
+    "segments.tau": [
+     16.0,
+     22.0,
+     32.0
+    ],
+    "segments.alpha": [
+     0.7,
+     1.0
+    ]
+   },
+   "fallback": "chain",
+   "include_fallback": true
   }
  ]
 }

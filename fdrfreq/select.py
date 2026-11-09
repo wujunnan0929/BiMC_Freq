@@ -53,7 +53,9 @@ def expand_grid(entry):
         out.append((dict(zip(paths, values)), cfg))
     fb = entry.get('fallback')
     fallback = None
-    if fb is not None:
+    if isinstance(fb, dict) and '__config__' in fb:
+        fallback = copy.deepcopy(fb['__config__'])
+    elif fb is not None:
         cfg = base
         for p, v in fb.items():
             cfg = set_path(cfg, p, v)
@@ -146,4 +148,7 @@ def chain(entry, locked):
     """Use a locked configuration as the base of the next selection stage."""
     e = copy.deepcopy(entry)
     e['base'] = deep_merge(locked['config'], entry.get('base', {}))
+    if entry.get('fallback') == 'chain':
+        # switched-off point = the chained configuration exactly (e.g. BiMC_ens with its own visual step)
+        e['fallback'] = {'__config__': copy.deepcopy(locked['config'])}
     return e
