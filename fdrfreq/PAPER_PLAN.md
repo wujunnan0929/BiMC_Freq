@@ -615,6 +615,7 @@ Elsevier 的投稿常规材料：Highlights（3–5 条，每条不超过 85 个
 - 题目候选：
   - "Variance-Guided Detail-Channel Recomposition for Training-Free Few-Shot Class-Incremental Learning"
   - "Where Few-Shot Prototypes Go Wrong: Variance-Guided Channel Recomposition for Training-Free Few-Shot Class-Incremental Learning"
+  - **定稿（2026-11-10，作者在稿件中改定）："Variance-Guided Channel Recomposition for Training-Free Few-Shot Class-Incremental Learning"。**
 - 三条贡献（措辞收窄）：
   1. **诊断。** 冻结 CLIP 特征上，K-shot 原型的误差不成比例地落在 pooled within-class variance 高的通道（集中度为随机通道的 1.7–2.3 倍）。这个排序由基类数据一次算出，新增"基类与新类方差排序的秩相关"作为直接证据。一阶模型定位为"解释"；只有 E9 给出数值预测后，才写"预测"。
   2. **方法。** DCR 在这些通道上，用相似基类原型构成的 donor 替换 K-shot 值。它闭式、免训练，可以插入 BiMC、BiMC† 和原型分类器。
@@ -769,7 +770,7 @@ Elsevier 的投稿常规材料：Highlights（3–5 条，每条不超过 85 个
 - **E11 耗时**：每个新类的 DCR 耗时（毫秒）。
 - 全部新的测试评估各只跑一次（脚本带 TEST_DONE 保护）；正文区分事先限定的分析和事后分析（E3、E10a）。
 
-### 13.6 新稿件结构（elsarticle，单栏投稿版）
+### 13.6 新稿件结构（Elsevier CAS 模板 cas-sc，单栏投稿版）
 1. Introduction
 2. Related Work
    - FSCIL
@@ -823,8 +824,14 @@ Elsevier 的投稿常规材料：Highlights（3–5 条，每条不超过 85 个
   - 投 Type 1 Regular article：必须与神经网络 / 学习系统直接相关，不收"现有算法的单纯组合"。cover letter 和引言第一段先回答"这对学习系统意味着什么"。
   - 单盲审：编辑先判断是否送审，送审至少两位审稿人。稿件上写作者信息。
 - **源文件**
-  - LaTeX 用 Elsevier 模板（elsarticle），提交全部可编辑源文件（.tex、.bib 或 .bbl、图）；PDF 不能作为源文件。
-  - 双栏只允许 LaTeX 稿件使用。投稿版用单栏（`preprint, review`）。
+  - LaTeX 用期刊提供的 Elsevier CAS 模板（els-cas-templates v2.4，作者 2026-11-10 提供；单栏 cas-sc.cls，双栏 cas-dc.cls）。2026-11-10 已把稿件从 elsarticle 改到 CAS。提交全部可编辑源文件：.tex、.bib 或 .bbl、cas-sc.cls、cas-common.sty、thumbnails/、model1-num-names.bst、图。PDF 不能作为源文件。
+  - 双栏只允许 LaTeX 稿件使用。投稿版用单栏 cas-sc；换双栏时把通栏的表和图改成 table* / figure*，再重查溢出。
+  - CAS 的写法（与 elsarticle 不同）：
+    - 标题页：`\shorttitle`、`\shortauthors`、`\title[mode = title]`、`\author[1]{...}[orcid=...]`、`\cormark`、`\ead`、`\affiliation[1]{organization=..., addressline=..., city=..., postcode=..., country=...}`、`\cortext`；abstract、highlights、keywords（用 `\sep` 分隔）三个环境都放在 `\maketitle` 之前。
+    - 类文件按 highlights 环境自动生成一页 Highlights；按每位作者的 `\credit{}` 由 `\printcredits` 生成 CRediT 声明；作者简介用 `\bio{照片}...\endbio`。
+    - 浮动体位置要写成键值：`\begin{table}[pos=!htbp]`。写 `[!htbp]` 时，表格会被类文件悄悄改成只放页顶 `[t]`（类文件的 bug，已实测）。
+    - 不要加载 algorithm.sty：它带入的 float.sty 与 CAS 一起使用时，hyperref 会把每个图表锚点写两次。算法浮动体已在导言区自定义。
+    - 类文件本身在 `\maketitle` 处报一条 117pt 的 Overfull 警告，Elsevier 自带样例也一样，页面上看不到，不用处理。
 - **标题页**
   - 标题简洁，尽量不用缩写和公式：标题里不出现 FSCIL、DCR。
   - 作者全名；单位用小写上标字母，给完整地址和国家。
@@ -877,11 +884,11 @@ Elsevier 的投稿常规材料：Highlights（3–5 条，每条不超过 85 个
   - 致谢：单独一节，放在参考文献正前方；不放在标题页或脚注里。
 - **作者简介（Vitae）**：每位作者一段不超过 100 词的简介，加一张证件照（单独的图文件）；简介用可编辑格式（Word），不能是 PDF。
 - **参考文献**
-  - 投稿时格式不作严格要求，但要前后一致。正文用方括号数字、按出现顺序编号，elsarticle-num 即可。尽量给 DOI。
+  - 投稿时格式不作严格要求，但要前后一致。正文用方括号数字、按出现顺序编号：用 model1-num-names.bst（CAS 模板注释里给出的数字制样式；模板默认的 cas-model2-names 是作者–年份制，不用）。尽量给 DOI。
   - 预印本要标明 "preprint" 或服务器名并给 DOI；已正式发表的引正式版。ShrinkSel / QPR 目前是 arXiv 预印本。
   - 引用软件时写创建者、名称、发布处、日期、标识符（DOI 优先）、版本。至少引用 CLIP、BiMC、FDR 的官方代码和我们自己的 Zenodo 存档。
   - 摘要里不引文献。
-- **结构**：章节编号 1、1.1、1.1.1；摘要不编号；附录用 A、B，公式、表、图分别编号为 Eq. (A.1)、Table A.1、Fig. A.1。
+- **结构**：章节编号 1、1.1、1.1.1；摘要不编号；附录用 A、B，公式、表、图分别编号为 Eq. (A.1)、Table A.1、Fig. A.1（CAS 的 `\appendix` 不做这一步，已在导言区补上：规则表为 Table B.1，复现表为 Table C.1）。
 - **补充材料**：与稿件同时提交，在正文中逐个引用，每个文件有简短说明。它会按原样在线发布、不经排版校对，所以要按正式稿的标准写。
 - **其他**
   - 单位用 SI（耗时用 ms）。
@@ -910,7 +917,7 @@ Elsevier 的投稿常规材料：Highlights（3–5 条，每条不超过 85 个
 - **C. ViT-L/14**（与 B 并行，需要 GPU）：`dev_backbone.sh` 提特征并在开发集上选参，把输出发回。
 - **D. 测试**：我检查 B、C 的输出（只按 13.9 R0 列出的几项检查）之后，你再跑 `final_extra.sh`、`final_shots.sh`、`final_backbone.sh`，最后跑 `holm.sh`。
 - **E. 改写稿件**（我来做；可以和 B–D 并行开始）
-  - 转到 elsarticle，按 13.6 重排结构。
+  - 转到 Elsevier 模板，按 13.6 重排结构（先用 elsarticle，2026-11-10 按期刊提供的 CAS 模板改为 cas-sc）。
   - 去掉频率，补 Related Work，修正全部说过头的论点和 13.10 列出的事实问题，统一符号和缩写。
   - 测试结果出来后换上新的表和图。
 - **F. 投稿材料**
@@ -997,3 +1004,53 @@ Elsevier 的投稿常规材料：Highlights（3–5 条，每条不超过 85 个
 4. **特征。** 每张图在提取时做 L2 归一化，以 float16 存储；σ̄²、原型等统计量在此之上用 float64 计算。正文写明。
 5. **ULA。** 12 节的 ULA 重调网格有 fallback，但没有设 include_fallback。正文"不胜过关闭状态的组件会被去掉"只适用于设了 include_fallback 或网格含 0 的条目（见 R10(a)）。
 6. **1-shot 的主表行。** 预期 DCR_ens 与 M4a 在 1-shot 上相同（R4）；确认后表中合并为一行并加注。
+
+### 13.11 开发集结果与测试前检查（2026-11-10）
+- **R0 四项检查（ViT-B/16 三个数据集，ViT-L/14 CUB）**：
+  1. 无报错。缺的条目都是预期内的：M4a_k01/k02 只在 1-shot 上定义；CIFAR、mini 5-shot 没有 BiMC_rt_D（重调增益 +0.04 / +0.10，不到 0.3）。
+  2. R4：三个数据集 1-shot 上 DCR_ens 与 M4a 的选参与各划分指标完全一致（r4_check.txt 均为 identical）；ViT-L/14 CUB 也一致。
+  3. R10(b) 触发：CUB 1-shot（+3.38）、CUB 5-shot（+0.53）、CIFAR 1-shot（+2.91）、mini 1-shot（+0.89）。其中 CIFAR、mini 1-shot 的 BiMC_rt_D 选成关闭（= BiMC_rt）。
+  4. 网格边界（只记录）：
+     - BiMC_rt：β 在 CIFAR / mini 1-shot 取 0.9、CUB 5-shot 取 0.4；λ_T 取 0.7（CUB）或 0.3（CIFAR、mini）；λ 在 CIFAR 1-shot 取 0.3、CUB / mini 5-shot 取 0；τ 多处取 8 或 32。重调基线可能还没到顶，写进局限。
+     - S1_soft：mini 5-shot 取 c=8。
+     - DCR_ens：τ 在若干设定取 16 或 32；mini 5-shot 取 k=0.1。
+  - 结论：可以跑 final_extra / final_shots（三个数据集）和 final_backbone（CUB）。
+- **R0 四项检查（ViT-L/14 CIFAR-100、miniImageNet，2026-11-10 晚）**：
+  0. parity 闸门（R6）：mini 5-shot 测试 Last，BiMC 94.47、BiMC† 94.49，已发表 94.46 / 94.46，差 +0.01 / +0.03 ≤ 0.5 → 通过。CIFAR 没有已发表的 ViT-L/14 值，只记录：BiMC 81.43、BiMC† 80.80。
+  1. 无报错，17 个条目齐全（与 CUB 相同）。
+  2. R4：两个数据集 1-shot 上 DCR_ens 与 M4a 的选参与各划分指标完全一致；5-shot 上 A2 也被选为关闭，两者同样一致。
+  3. R10(b)：ViT-L/14 没有重调 BiMC†（dev_backbone.sh 不含 BiMC_rt），不适用，与 CUB 相同。
+  4. 网格边界（只记录，不扩网格）：
+     - DCR_ens / M4a：CIFAR 1-shot 取 k = 1.0（网格上界，即替换全部通道）、r = 0.25（下界）、τ = 32（上界）；CIFAR 5-shot τ = 32；mini 1-shot r = 1.0、α = 1.0、τ = 16；mini 5-shot k = 0.1（下界）、τ = 16。
+     - ULA：λ 都取 0.04（下界）；mini 5-shot τ = 0.005（下界）；5-shot tth = 0.95（上界）。LA：5-shot 取 0（= 关闭）。M4a_soft：mini 5-shot λ = 0.1（下界），τ 多取 16（下界）。
+  - 结论：可以跑 `bash fdrfreq/scripts/final_backbone.sh cifar100` 和 `... miniimagenet`；三个数据集都测完后跑 `TAG=vitl14 bash fdrfreq/scripts/holm.sh`。
+- **ViT-L/14 开发集观察（测试后再写结论）**：
+  - 误差集中仍在，但弱于 ViT-B/16：10% 预算下方差集合捕获 20–28%，集中度 ×1.99–2.75（ViT-B/16 为 ×2.29–3.35）；Fisher、APE 为 ×0.81–1.09。基类–新类方差 pooled Spearman 0.92 / 0.96 / 0.89，都 ≥ 0.7；Fisher 与 σ̄² 的 Spearman −0.01 / +0.04 / −0.18。
+  - DCR_ens − BiMC†：1-shot +4.77 / +5.23 / +0.53，5-shot +0.74 / +0.26 / +0.01。
+  - 选出的 k：1-shot 0.8 / 1.0 / 0.7，5-shot 0.3 / 0.6 / 0.1，随 K 变小，方向与推论一致。推论在 K = 1 的预测约为 1.0（三个数据集）。
+  - CIFAR 1-shot 选到 k = 1：DCR 等于把整个原型与 donor 混合，random / lowvar / fisher 三个对照与它完全相同，和"收缩全部通道"也只差 0.05（85.45 对 85.40）。这个设定上的增益不能作为"选哪些通道"的证据，正文已如实写。该设定 BiMC†（80.22）还低于零样本 CLIP（84.55）。
+  - k = 0.7–0.8 时随机集合期望有 70–80% 的通道落在方差集合内，1-shot 上 random 与 DCR 只差 0.06–0.09。
+  - 稿件：Table 2（迁移）与 Table 7（ViT-L/14，开发集；新增零样本行和选出的 k 行）已更新，7.4 节已改写；测试结果仍为"?"。
+- **测试结果（2026-11-10 单次测试，导入 paper/dcr_neucom/results/test_new）与规则判定**：
+  - 审计：TEST_LOG 共 193 次评估，无重复；每个条目都是先锁定、后测试。旧条目的测试值与 test.json 完全一致（162 个对比，0 差异）。R4：DCR_ens 与 M4a 的测试预测逐图一致（1-shot 全部和 mini 5-shot）；CIFAR 5-shot 与 BiMC† 一致。
+  - R4 / R7（ViT-B/16，Holm m = 48，全部找到）：DCR_ens − BiMC† 在 4/6 个设定显著：1-shot +5.21 / +4.39 / +0.88，CUB 5-shot +1.28 [0.92, 1.66]，p_Holm 均为 0.012（下限 48/4000）；CIFAR 5-shot 关闭，mini 5-shot −0.08（p = 1）。M4a − BiMC† 5/6 显著。
+    - 冻结结论（种子内 bootstrap）在 Holm 下的变化：mini 1-shot 胜 random +0.18（p = 0.068）、胜"收缩全部通道" +0.28（p = 0.135）不再显著；freq 对照只剩 CUB 1-shot 显著；CIFAR 1-shot 收缩更好 −0.23（p = 0.36，不显著）。正文已两种口径并列。
+  - R1（S1_soft）：Δ = M4a − S1 ≤ 0 的设定 4 个（CIFAR −0.28 / −0.13，mini −0.02 / −0.03）；CUB +1.24 / +0.29 → 走第一分支：写"DCR 是 σ̄² 收缩的硬阈值近似，精度相当，保留硬版本"，方法一节已改。
+  - R2（APE）：M4a − M4a_ape 在 5/6 设定 CI 下界 > 0（0.29–3.98；mini 5-shot 打平）；APE 无设定更好。M4a_apelow 与 DCR 差 ≤ 0.33。
+  - R3（事后分析）：保留的 1-shot 增益比例 k = 0.1 / 0.2：CUB 37% / 58%，CIFAR −8% / 13%，mini 55% / 70%。
+  - R5（shot 扫描，两层 CI）：CUB +5.21 / +2.36 / +1.74 / +1.28 / +0.67（全部 > 0）；CIFAR +4.39 / +1.65 / +0.45 / 关闭 / 关闭；mini +0.88 / +0.05 / +0.05 / −0.08 / −0.12 [−0.23, −0.01] → K = 10 时 CIFAR、mini 的增益消失，正文与局限一节已写。
+  - R6（ViT-L/14，Holm m = 42）：DCR_ens − BiMC† 在 5/6 显著：1-shot +5.70 / +7.14 / +0.87，5-shot +0.70 / +0.92；mini 5-shot −0.06。胜 random 只在 5-shot CUB / CIFAR（+0.53 / +0.40）；1-shot 大预算下不胜（CUB +0.25，mini −0.13）。已发表 ViT-L/14 mini 5-shot 值（ZS 89.68、Proto 90.41、TEEN 91.07、FeCAM 91.44、BiMC / BiMC† 94.46）已放入 Table 7。
+  - R10：(a) ULA_fb 1-shot 保留、5-shot 关闭；原 ULA 与已发表设置移到附录 Table C.2。(b) BiMC_rt 1-shot 测试 +3.92 / +4.37 / +1.15，5-shot −0.08 / +0.05 / +0.06。BiMC_rt_D − BiMC_rt：CUB 1-shot +0.96 [0.69, 1.25]、5-shot +0.45 [0.15, 0.74]；CIFAR / mini 1-shot 上 DCR 被选为关闭。→ 只在 CUB 上写"重调基线后增益仍在"。重调后的 BiMC† 在 CIFAR 1-shot 与 DCR 持平（72.34 对 72.36）、mini 1-shot 超过 DCR（91.79 对 91.51），摘要、引言、讨论与结论已如实写。
+  - 稿件：所有"?"已填（Tables 3–9、11、B.1）；新增 Table 8（ViT-L/14 Holm）和 Table C.2（ULA 各版本）；摘要 248 词。
+- **只用开发集即可判定的规则**：
+  - R8(a)：pooled Spearman 为 0.94 / 0.97 / 0.93，三个都 ≥ 0.7 → "大体共享"。逐类均值 0.54 / 0.74 / 0.69，最小 0.43 / 0.58 / 0.55。ViT-L/14 CUB 为 0.92。
+  - R8(b)：Fisher 与 σ̄² 的 Spearman 为 −0.12 / +0.15 / −0.07，< 0.5 → 写"两者不同"。
+  - R8(c)(d)：固定 10% 预算下方差集合的集中度 ×2.29–3.35（捕获 23–33%），25% 时 ×1.55–1.92；APE 准则 ×0.78–0.88，Fisher 在 CUB / mini 为 ×0.86–0.91、CIFAR 为 ×1.33–1.37；选中预算下捕获 71% / 81% / 60%（1-shot）。Table 1 已替换。
+  - R8(e)：class-episode 数 750 / 450 / 450，与 13.10 一致。
+  - R9：预测值取到网格点后与选出 k 相等或相邻的 K 数为 CUB 2/5、CIFAR 3/5、mini 4/5，只有 1 个数据集达到 4/5 → 不写"predicts"；三个数据集选出的 k 都随 K 不增 → 写"consistent with the direction"。
+  - R11：DCR 每个新类 0.46 / 1.44 / 2.52 ms（CPU）。
+- **其他开发集观察（不是规则判定，测试后再写结论）**：
+  - BiMC_rt 在 1-shot 上开发集增益很大（+3.38 / +2.91 / +0.89），CIFAR 上甚至略高于 DCR（78.32 对 77.98）。主张强度取决于测试结果与 R10(b)。
+  - S1_soft 在开发集 6 个设定上都低于 M4a（1-shot CUB −2.69，其余 −0.01 至 −0.57）。
+  - 1-shot 上 M4a_ape（替换 APE 最看重的通道）明显差于 M4a（−4.03 / −1.07 / −1.04），M4a_apelow 接近 random。
+- **稿件**：Neurocomputing 版初稿在 paper/dcr_neucom（2026-11-10 起为 Elsevier CAS 模板 cas-sc，单栏；参考文献 model1-num-names）。表格由 figsrc/tables.py 从 results/ 生成，待测试的格子显示红色"?"；测试结果到后只需更新 results/test_new/ 并重跑脚本。

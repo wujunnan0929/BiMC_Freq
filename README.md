@@ -46,6 +46,21 @@ python main.py --data_cfg ./configs/datasets/cub200.yaml --train_cfg ./configs/t
 python main.py --data_cfg ./configs/datasets/cub200.yaml --train_cfg ./configs/trainers/bimc_ensemble.yaml
 ~~~
 
+## Manual BiMC baseline retuning
+
+Use a dedicated parameter profile to retune BiMC or BiMC ensemble. Profiles for
+CUB-200, CIFAR-100 and miniImageNet live in `configs/retune/`; they initially
+match the published settings, not newly selected optima.
+
+```bash
+python main.py --data_cfg configs/datasets/cub200.yaml --train_cfg configs/trainers/bimc_ensemble.yaml --retune_cfg configs/retune/cub200.yaml --dry-run
+```
+
+Edit the profile or append `--opts DATASET.BETA 0.6 TRAINER.BiMC.LAMBDA_I 0.2`
+to override individual values. Remove `--dry-run` to evaluate that fixed
+configuration. See [BiMC manual retuning](docs/bimc_retune.md) for the full
+parameter table, examples, output files and code flow.
+
 ## Frequency-aware prototype calibration
 
 The frequency experiment is a training-free extension of BiMC. It decomposes

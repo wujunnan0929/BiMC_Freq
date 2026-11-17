@@ -1,0 +1,24 @@
+# Manual values, initially matching the published CUB-200 settings.
+# Merge order: dataset YAML < trainer YAML < this file < --opts.
+SEED: 1
+# Empty: use outputs/retune/<dataset>/<method>_shot<K>_seed<S>_<config hash>.
+# A nonempty explicit path must be unused (or empty) when starting a run.
+OUTPUT_DIR: ""
+
+DATASET:
+  NAME: "CUB200"             # Must match --data_cfg.
+  NUM_INC_SHOT: 5            # Use 1 for the one-shot experiment.
+  SUPPORT_SEED: -1           # -1 follows SEED; fixed >=0 pairs support draws.
+  BETA: 0.3                 # Text weight; visual weight is 1 - BETA.
+  ENSEMBLE_ALPHA: 0.8        # Fused-prototype weight in BiMC ensemble.
+
+TRAINER:
+  BiMC:
+    VISION_CALIBRATION: True
+    LAMBDA_I: 0.1           # Visual donor strength in [0,1]; 0 disables it.
+    TAU: 16                 # Positive integer; multiplies donor cosine scores.
+    TEXT_CALIBRATION: True
+    LAMBDA_T: 0.5           # Description weight in [0,1]; 0 uses prompt only.
+    USING_ENSEMBLE: True    # True: BiMC dagger; False: plain BiMC.
+    GAMMA_BASE: 1.0         # Nonnegative covariance shrinkage coefficient.
+    GAMMA_INC: 5.0

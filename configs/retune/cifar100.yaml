@@ -1,0 +1,22 @@
+# Manual values, initially matching the published CIFAR-100 settings.
+# Merge order: dataset YAML < trainer YAML < this file < --opts.
+SEED: 1
+OUTPUT_DIR: ""               # Auto path includes the resolved configuration hash.
+
+DATASET:
+  NAME: "CIFAR100"           # Must match --data_cfg.
+  NUM_INC_SHOT: 5
+  SUPPORT_SEED: -1           # Follow SEED; fix this to pair support draws.
+  BETA: 0.65                # Text weight in [0,1].
+  ENSEMBLE_ALPHA: 0.6       # Fused-prototype weight in [0,1].
+
+TRAINER:
+  BiMC:
+    VISION_CALIBRATION: True
+    LAMBDA_I: 0.1           # Visual donor strength in [0,1].
+    TAU: 16                 # Positive integer cosine multiplier.
+    TEXT_CALIBRATION: True
+    LAMBDA_T: 0.5           # Description weight in [0,1].
+    USING_ENSEMBLE: True    # False selects plain BiMC.
+    GAMMA_BASE: 1.0         # Nonnegative covariance shrinkage coefficient.
+    GAMMA_INC: 5.0

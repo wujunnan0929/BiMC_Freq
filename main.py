@@ -1,5 +1,4 @@
 from yacs.config import CfgNode as CN
-from utils.util import set_gpu, set_seed
 import argparse
 
 def print_args(cfg):
@@ -337,7 +336,7 @@ def extend_cfg(cfg):
 
     
 
-def setup_cfg(dataset_cfg_file, method_cfg_file, opts=None):
+def setup_cfg(dataset_cfg_file, method_cfg_file, opts=None, retune_cfg_file=None):
     cfg = CN()
     extend_cfg(cfg)
 
@@ -347,9 +346,18 @@ def setup_cfg(dataset_cfg_file, method_cfg_file, opts=None):
     # 2. From the method config file
     cfg.merge_from_file(method_cfg_file)
 
-    # 3. Optional command-line overrides for controlled ablations
+    # 3. Optional manual BiMC retuning profile (after published defaults).
+    if retune_cfg_file:
+        from utils.bimc_retune import merge_retune_config
+        merge_retune_config(cfg, retune_cfg_file)
+
+    # 4. Command-line overrides have the highest priority.
     if opts:
         cfg.merge_from_list(opts)
+
+    if retune_cfg_file:
+        from utils.bimc_retune import prepare_retune_config
+        prepare_retune_config(cfg)
 
     frequency = cfg.TRAINER.BiMC.FREQUENCY
     dual = cfg.TRAINER.BiMC.DUAL_FREQUENCY
@@ -369,12 +377,15 @@ def setup_cfg(dataset_cfg_file, method_cfg_file, opts=None):
     return cfg
 
 
-def main():
+def main(argv=None):
     # Set up the argument parser
     parser = argparse.ArgumentParser(description="Run the pipeline")
 
-    parser.add_argument('--data_cfg', type=str, help="Path to the data configuration file")
-    parser.add_argument('--train_cfg', type=str, help="Path to the training configuration file")
+    parser.add_argument('--data_cfg', type=str, required=True, help="Path to the data configuration file")
+    parser.add_argument('--train_cfg', type=str, required=True, help="Path to the training configuration file")
+    parser.add_argument('--retune_cfg', help="Optional manual BiMC parameter profile; applied before --opts")
+    parser.add_argument('--dry-run', action='store_true',
+                        help="Print the resolved configuration without loading data or CLIP")
     parser.add_argument(
         '--opts',
         default=None,
@@ -382,12 +393,21 @@ def main():
         help="Override config values, e.g. TRAINER.BiMC.FREQUENCY.VIEW_MODE natural",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     data_cfg = args.data_cfg
     train_cfg = args.train_cfg
 
-    cfg = setup_cfg(data_cfg, train_cfg, args.opts)
+    cfg = setup_cfg(data_cfg, train_cfg, args.opts, retune_cfg_file=args.retune_cfg)
+    if args.retune_cfg:
+        from utils.bimc_retune import print_retune_settings, check_output_directory
+        print_retune_settings(cfg)
+    if args.dry_run:
+        print_args(cfg)
+        print('Dry run: no data, model weights or output files were loaded/created.')
+        return
+    if args.retune_cfg:
+        check_output_directory(cfg.OUTPUT_DIR)
 
     from models.frequency_guidance import validate_settings
     validate_settings(cfg)
@@ -395,6 +415,7 @@ def main():
     validate_frequency_inputs(cfg)
 
     # Set the random seed and GPU ID
+    from utils.util import set_gpu, set_seed
     set_seed(cfg.SEED)
     set_gpu(cfg.DEVICE.GPU_ID)
 

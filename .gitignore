@@ -8,6 +8,7 @@ paper/*
 .codex_tmp
 .chart-data*
 docs/*
+!docs/bimc_retune.md
 !docs/safd_experiments.md
 !docs/safd_dual_design.md
 !docs/frequency_guidance_experiment_protocol.md
