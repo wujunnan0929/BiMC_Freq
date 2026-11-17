@@ -76,17 +76,19 @@ def dev_episodes(bank, split_seeds=(2, 3, 4), n_sequences=10, shot=None, split_m
     return eps
 
 
-def evaluate_candidates(bank, episodes, configs):
+def evaluate_candidates(bank, episodes, configs, progress=None):
     """Per-config arrays [n_episodes, 6]: last, last_base, last_novel, avg, last_hm,
     channels touched per novel class (0 without segment recomposition)."""
     out = [[] for _ in configs]
-    for e in episodes:
+    for episode_index, e in enumerate(episodes):
         runner = EpisodeRunner(bank, e)
         for i, cfg in enumerate(configs):
             res = runner.run(cfg)
             r, st = res['summary'], res.get('segment_stats') or {}
             out[i].append((r['last'], r['last_base'], r['last_novel'], r['avg'], r['last_hm'],
                            float(st.get('channels_touched', 0.0))))
+        if progress is not None:
+            progress(episode_index + 1, len(episodes))
     return [np.asarray(o, dtype=np.float64) for o in out]
 
 
@@ -94,7 +96,7 @@ def select(bank, entry, episodes, progress=None, tolerance=None, objective='last
     t0 = time.time()
     cands, fallback = expand_grid(entry)
     configs = [c for _, c in cands] + ([fallback] if fallback is not None else [])
-    scores = evaluate_candidates(bank, episodes, configs)
+    scores = evaluate_candidates(bank, episodes, configs, progress=progress)
     tol = float(tolerance if tolerance is not None else entry.get('tolerance', 0.2))
     split_ids = np.array([e.meta['split_seed'] for e in episodes])
     rows = []

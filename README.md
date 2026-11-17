@@ -61,6 +61,18 @@ to override individual values. Remove `--dry-run` to evaluate that fixed
 configuration. See [BiMC manual retuning](docs/bimc_retune.md) for the full
 parameter table, examples, output files and code flow.
 
+Automatic grid search is also available on cached CLIP features. Edit
+`configs/retune/search.yaml` to choose the search ranges and validation protocol:
+
+```bash
+python tools/tune_bimc.py --dataset cub200 --bank banks/cub200_vitb16 --shot 1 --dry-run
+```
+
+Remove `--dry-run` to select parameters using base-training validation episodes.
+The search saves `best.yaml`, which can be passed to `main.py --retune_cfg` for
+a later fixed benchmark evaluation. Feature-bank preparation and commands are
+documented in [BiMC retuning](docs/bimc_retune.md).
+
 ## Frequency-aware prototype calibration
 
 The frequency experiment is a training-free extension of BiMC. It decomposes

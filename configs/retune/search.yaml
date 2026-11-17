@@ -1,0 +1,18 @@
+# Grid search on base-class pseudo-incremental validation episodes only.
+# A scalar list of length 1 fixes that parameter. Remove a key to use the
+# value in configs/retune/<dataset>.yaml (or its --opts override).
+objective: hm                   # hm | last | avg
+split_mode: contiguous          # contiguous | random
+split_seeds: [2, 3, 4]
+sequences: 10                    # 3 splits x 10 sequences = 30 episodes
+
+# 6 * 3 * 5 * 3 = 270 combinations, plus the initial manual configuration.
+grid:
+  DATASET.BETA: [0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+  TRAINER.BiMC.LAMBDA_T: [0.3, 0.5, 0.7]
+  TRAINER.BiMC.LAMBDA_I: [0.0, 0.05, 0.1, 0.2, 0.3]
+  TRAINER.BiMC.TAU: [8, 16, 32]
+  # Optional ensemble searches (USING_ENSEMBLE must be True):
+  # DATASET.ENSEMBLE_ALPHA: [0.6, 0.8, 1.0]
+  # TRAINER.BiMC.GAMMA_BASE: [0.5, 1.0, 2.0]
+  # TRAINER.BiMC.GAMMA_INC: [1.0, 5.0, 10.0]
